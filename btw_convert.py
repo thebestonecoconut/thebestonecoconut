@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 # Sekwencje co najmniej 2 "drukowalnych" znaków. Obsługujemy polskie znaki.
 _PRINTABLE = (
     r"[\x20-\x7E"
-    r"\u00A0-\u024F"   # Latin-1 + Latin Extended-A/B (ą, ć, ę, ł, ó, ...)
+    r"\u00A0-\u017F"   # Latin-1 + Latin Extended-A (ą, ć, ę, ł, ó, ä, ö, ü, ß...)
     r"\u2010-\u2027"   # myślniki, cudzysłowy itp.
     r"\u20AC]"         # €
 )
@@ -56,17 +56,25 @@ _NOISE_RE = re.compile(
 
 # Słowa-klucze wewnętrznych nazw BarTendera, które zwykle nie są treścią etykiety.
 _INTERNAL_KEYWORDS = (
-    "BarTender", "Seagull", "btObject", "btField", "Microsoft", "OLE",
-    "xmlns", "http://", "https://", "schemas", "GUID", "FontName",
+    "BarTender", "Seagull", "btObject", "btField", "Microsoft",
+    "xmlns", "http://", "https://", "schemas", "FontName",
+    "DataSource", "FormatData", "RichTextData", "BackgroundData", "TextData",
+    "DialogData", "ControlStringData", "LineControlData", "NumberFormatData",
+    "PrintJobFieldDs", "BackgroundRFIDData", "ScreenDs", "ScriptEvent",
+    "PredefinedStocksPage", "StatusPage", "DesignTemplatePage", "Status Page",
+    "Print Quantity", "PrinterCopies", "SerializedCount", "BatchCount",
+    "FormatID", "NICELbl", "Functions and Subs", "OnProcessData",
+    "OnPostSerialize", "Box Options", "Dialog Control", "Line Control",
+    "Root.Folder", "Word Processor", "Default Paragraph Font",
 )
 
 
-# UTF-16LE: znak (młodszy bajt 0x20-0xFF) + starszy bajt 0x00-0x04
-# (pokrywa ASCII, Latin-1 oraz polskie znaki z Latin Extended, U+0000–U+04FF).
-_UTF16_RUN_RE = re.compile(rb"(?:[\x20-\xff][\x00-\x04]){2,}")
-# UTF-8: ASCII drukowalne + sekwencje 2- i 3-bajtowe (polskie znaki, €, myślniki).
+# UTF-16LE: znak (młodszy bajt 0x09/0x0A/0x0D/0x20-0xFF) + starszy bajt 0x00-0x04.
+# Dopuszczamy tab/CR/LF, żeby wieloliniowy tekst (np. RTF) nie był cięty.
+_UTF16_RUN_RE = re.compile(rb"(?:[\x09\x0a\x0d\x20-\xff][\x00-\x04]){2,}")
+# UTF-8: ASCII drukowalne (+ tab/CR/LF) oraz sekwencje 2- i 3-bajtowe.
 _UTF8_RUN_RE = re.compile(
-    rb"(?:[\x20-\x7e]|[\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}){3,}"
+    rb"(?:[\x09\x0a\x0d\x20-\x7e]|[\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}){3,}"
 )
 # Osadzony obraz PNG (podgląd etykiety) — usuwamy, bo to źródło większości śmieci.
 _PNG_RE = re.compile(rb"\x89PNG\r\n\x1a\n.*?IEND.{4}", re.DOTALL)
@@ -79,17 +87,102 @@ _ENTITIES = (
 )
 
 
+# --- Konwersja RTF -> czysty tekst -------------------------------------------
+
+_RTF_RE = re.compile(
+    r"\\([a-z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)",
+    re.IGNORECASE | re.DOTALL,
+)
+_RTF_DESTINATIONS = frozenset((
+    "fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "objdata",
+    "listtable", "listoverridetable", "list", "listlevel", "listoverride",
+    "filetbl", "revtbl", "rsidtbl", "generator", "themedata", "datastore",
+    "latentstyles", "defchp", "defpap", "pgptbl", "panose", "falt",
+    "fldinst", "xmlnstbl", "wgrffmtfilter", "listpicture", "blipuid",
+))
+_RTF_SPECIAL = {
+    "par": "\n", "sect": "\n", "page": "\n", "line": "\n", "tab": "\t",
+    "cell": " | ", "row": "\n", "nestcell": " | ", "nestrow": "\n",
+    "emdash": "\u2014", "endash": "\u2013", "bullet": "\u2022",
+    "lquote": "\u2018", "rquote": "\u2019", "ldblquote": "\u201C", "rdblquote": "\u201D",
+    "emspace": " ", "enspace": " ", "qmspace": " ",
+}
+
+
+def _rtf_to_text(text: str) -> str:
+    """Zamienia RTF na czysty tekst (dekoduje \\uN i \\'xx, usuwa formatowanie)."""
+    stack: list[tuple[int, bool]] = []
+    ignorable = False
+    ucskip = 1
+    curskip = 0
+    out: list[str] = []
+    for m in _RTF_RE.finditer(text):
+        word, arg, hexv, char, brace, tchar = m.groups()
+        if brace:
+            if brace == "{":
+                stack.append((ucskip, ignorable))
+            elif brace == "}" and stack:
+                ucskip, ignorable = stack.pop()
+        elif char is not None:
+            if char == "~":
+                if not ignorable:
+                    out.append("\u00A0")
+            elif char in "{}\\":
+                if not ignorable:
+                    out.append(char)
+            elif char == "*":
+                ignorable = True
+        elif word:
+            curskip = 0
+            if word in _RTF_DESTINATIONS:
+                ignorable = True
+            elif ignorable:
+                pass
+            elif word in _RTF_SPECIAL:
+                out.append(_RTF_SPECIAL[word])
+            elif word == "uc":
+                ucskip = int(arg) if arg else 1
+            elif word == "u":
+                c = int(arg)
+                if c < 0:
+                    c += 0x10000
+                if not ignorable:
+                    out.append(chr(c) if c <= 0x10FFFF else "?")
+                curskip = ucskip
+        elif hexv is not None:
+            if curskip > 0:
+                curskip -= 1
+            elif not ignorable:
+                out.append(bytes([int(hexv, 16)]).decode("cp1252", "replace"))
+        elif tchar:
+            if curskip > 0:
+                curskip -= 1
+            elif not ignorable:
+                out.append(tchar)
+    return "".join(out)
+
+
+_WS_RE = re.compile(r"[ \t]+")
+
+
 def _expand_region(text: str, raw: bool, out: list[str]) -> None:
     """Dla zdekodowanego fragmentu dorzuca do `out` znalezione ciągi znaków.
 
-    W trybie zwykłym dekoduje encje XML i usuwa znaczniki (zostawiając treść);
-    w trybie raw zwraca wszystko bez zmian.
+    Wykrywa RTF i zamienia go na czysty tekst; w trybie zwykłym dekoduje encje
+    XML i usuwa znaczniki; w trybie raw zwraca wszystko bez zmian.
     """
     if raw:
         for match in _RUN_RE.findall(text):
             cleaned = match.strip()
             if cleaned:
                 out.append(cleaned)
+        return
+
+    if "\\rtf" in text:
+        for line in _rtf_to_text(text).splitlines():
+            line = _WS_RE.sub(" ", line).strip(" |")
+            if line:
+                out.append(line)
         return
 
     t = text

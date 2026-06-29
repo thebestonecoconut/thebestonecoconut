@@ -63,17 +63,77 @@ if (-not $Paths -or $Paths.Count -eq 0) {
 }
 
 $Latin1    = [System.Text.Encoding]::GetEncoding(28591)
+$Cp1252    = [System.Text.Encoding]::GetEncoding(1252)
 $Utf8      = New-Object System.Text.UTF8Encoding($false)
-$Printable = '[\x20-\x7E\xA0-\u024F\u2010-\u2027\u20AC]'
+$Printable = '[\x20-\x7E\xA0-\u017F\u2010-\u2027\u20AC]'
 $RunRe     = [regex]($Printable + '{2,}')
-# UTF-16LE: znak (mlodszy bajt 0x20-0xFF) + starszy bajt 0x00-0x04
-$Utf16Re   = [regex]'(?:[\x20-\xFF][\x00-\x04]){2,}'
-# UTF-8: ASCII drukowalne oraz sekwencje 2- i 3-bajtowe (m.in. polskie znaki, EUR, mysliniki)
-$Utf8Re    = [regex]'(?:[\x20-\x7E]|[\xC2-\xDF][\x80-\xBF]|[\xE0-\xEF][\x80-\xBF]{2}){3,}'
+# UTF-16LE: znak (tab/CR/LF lub 0x20-0xFF) + starszy bajt 0x00-0x04 (wieloliniowy tekst)
+$Utf16Re   = [regex]'(?:[\x09\x0A\x0D\x20-\xFF][\x00-\x04]){2,}'
+# UTF-8: ASCII drukowalne (+ tab/CR/LF) oraz sekwencje 2- i 3-bajtowe
+$Utf8Re    = [regex]'(?:[\x09\x0A\x0D\x20-\x7E]|[\xC2-\xDF][\x80-\xBF]|[\xE0-\xEF][\x80-\xBF]{2}){3,}'
 $TagRe     = [regex]'<[^<>]{0,500}>'
 $SplitRe   = [regex]'\s{2,}|[\r\n\t]+'
 $NoiseRe   = [regex]'^(?:[0-9A-Fa-f]{16,}|[\W_]+|(?:[A-Za-z]\d*){1,2})$'
-$Keywords  = @('BarTender','Seagull','btObject','btField','Microsoft','xmlns','schemas','FontName')
+$Keywords  = @('BarTender','Seagull','btObject','btField','Microsoft','xmlns','schemas','FontName',
+  'DataSource','FormatData','RichTextData','BackgroundData','TextData','DialogData',
+  'ControlStringData','LineControlData','NumberFormatData','PrintJobFieldDs','BackgroundRFIDData',
+  'ScreenDs','ScriptEvent','PredefinedStocksPage','StatusPage','DesignTemplatePage','Status Page',
+  'Print Quantity','PrinterCopies','SerializedCount','BatchCount','FormatID','NICELbl',
+  'Functions and Subs','OnProcessData','OnPostSerialize','Box Options','Dialog Control',
+  'Line Control','Root.Folder','Word Processor','Default Paragraph Font')
+
+# --- Konwersja RTF -> czysty tekst ---
+$RtfRe = New-Object System.Text.RegularExpressions.Regex(
+  "\\([a-z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)",
+  [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$RtfDest = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($d in @('fonttbl','colortbl','stylesheet','info','pict','object','objdata','listtable',
+  'listoverridetable','list','listlevel','listoverride','filetbl','revtbl','rsidtbl','generator',
+  'themedata','datastore','latentstyles','defchp','defpap','pgptbl','panose','falt','fldinst',
+  'xmlnstbl','wgrffmtfilter','listpicture','blipuid')) { [void]$RtfDest.Add($d) }
+$RtfSpecial = @{
+  'par'="`n"; 'sect'="`n"; 'page'="`n"; 'line'="`n"; 'tab'="`t"; 'cell'=' | '; 'row'="`n";
+  'nestcell'=' | '; 'nestrow'="`n"; 'emdash'=[char]0x2014; 'endash'=[char]0x2013;
+  'bullet'=[char]0x2022; 'lquote'=[char]0x2018; 'rquote'=[char]0x2019;
+  'ldblquote'=[char]0x201C; 'rdblquote'=[char]0x201D; 'emspace'=' '; 'enspace'=' '; 'qmspace'=' '
+}
+
+function ConvertFrom-Rtf([string]$text) {
+  $stack = New-Object System.Collections.Generic.Stack[object]
+  $ignorable = $false; $ucskip = 1; $curskip = 0
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($m in $RtfRe.Matches($text)) {
+    $word=$m.Groups[1]; $arg=$m.Groups[2]; $hex=$m.Groups[3]
+    $char=$m.Groups[4]; $brace=$m.Groups[5]; $tchar=$m.Groups[6]
+    if ($brace.Success) {
+      if ($brace.Value -eq '{') { $stack.Push(@($ucskip,$ignorable)) }
+      elseif ($stack.Count -gt 0) { $st=$stack.Pop(); $ucskip=$st[0]; $ignorable=$st[1] }
+    } elseif ($char.Success) {
+      $c=$char.Value
+      if ($c -eq '~') { if (-not $ignorable) { [void]$sb.Append([char]0x00A0) } }
+      elseif ($c -eq '{' -or $c -eq '}' -or $c -eq '\') { if (-not $ignorable) { [void]$sb.Append($c) } }
+      elseif ($c -eq '*') { $ignorable=$true }
+    } elseif ($word.Success) {
+      $w=$word.Value; $curskip=0
+      if ($RtfDest.Contains($w)) { $ignorable=$true }
+      elseif ($ignorable) { }
+      elseif ($RtfSpecial.ContainsKey($w)) { [void]$sb.Append([string]$RtfSpecial[$w]) }
+      elseif ($w -eq 'uc') { $ucskip = if ($arg.Success) { [int]$arg.Value } else { 1 } }
+      elseif ($w -eq 'u') {
+        $cval=[int]$arg.Value; if ($cval -lt 0) { $cval += 0x10000 }
+        if (-not $ignorable) { [void]$sb.Append([char]$cval) }
+        $curskip=$ucskip
+      }
+    } elseif ($hex.Success) {
+      if ($curskip -gt 0) { $curskip-- }
+      elseif (-not $ignorable) { [void]$sb.Append($Cp1252.GetString([byte[]]@([Convert]::ToInt32($hex.Value,16)))) }
+    } elseif ($tchar.Success) {
+      if ($curskip -gt 0) { $curskip-- }
+      elseif (-not $ignorable) { [void]$sb.Append($tchar.Value) }
+    }
+  }
+  return $sb.ToString()
+}
 
 function Test-Content([string]$s) {
   if ($s.Length -lt 2) { return $false }
@@ -86,17 +146,26 @@ function Test-Content([string]$s) {
   return $true
 }
 
-# Dekoduje encje XML i (poza trybem raw) usuwa znaczniki, zachowujac tresc.
+# Wykrywa RTF i konwertuje na czysty tekst; inaczej dekoduje encje XML i usuwa
+# znaczniki (zostawiajac tresc). W trybie raw zwraca wszystko bez zmian.
 function Expand-Region([string]$text, [bool]$raw, $runs) {
-  if (-not $raw) {
-    $t = $text -replace '&amp;','&' -replace '&lt;','<' -replace '&gt;','>' `
-               -replace '&quot;','"' -replace '&apos;',"'" -replace '&#39;',"'"
-    $t = $TagRe.Replace($t, '  ')          # usun znaczniki, zostaw tresc
-    foreach ($piece in $SplitRe.Split($t)) {
-      foreach ($r in $RunRe.Matches($piece)) { $runs.Add($r.Value.Trim()) }
-    }
-  } else {
+  if ($raw) {
     foreach ($r in $RunRe.Matches($text)) { $runs.Add($r.Value.Trim()) }
+    return
+  }
+  if ($text.Contains('\rtf')) {
+    foreach ($line in (ConvertFrom-Rtf $text) -split "`r?`n") {
+      $l = ($line -replace '[ \t]+',' ').Trim()
+      $l = $l.Trim('|').Trim()
+      if ($l.Length -gt 0) { $runs.Add($l) }
+    }
+    return
+  }
+  $t = $text -replace '&amp;','&' -replace '&lt;','<' -replace '&gt;','>' `
+             -replace '&quot;','"' -replace '&apos;',"'" -replace '&#39;',"'"
+  $t = $TagRe.Replace($t, '  ')          # usun znaczniki, zostaw tresc
+  foreach ($piece in $SplitRe.Split($t)) {
+    foreach ($r in $RunRe.Matches($piece)) { $runs.Add($r.Value.Trim()) }
   }
 }
 
