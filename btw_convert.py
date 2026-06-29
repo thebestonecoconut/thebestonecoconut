@@ -267,8 +267,8 @@ def _looks_like_content(s: str) -> bool:
         return False
     if any(k.lower() in s.lower() for k in _INTERNAL_KEYWORDS):
         return False
-    # musi zawierać przynajmniej jedną literę lub cyfrę
-    if not re.search(r"[0-9A-Za-z\u00A0-\u024F]", s):
+    # musi zawierać przynajmniej jedną literę lub cyfrę (dowolny alfabet/język)
+    if not any(ch.isalnum() for ch in s):
         return False
     # krótkie tokeny bez spacji z "kodowymi" znakami to zwykle śmieci binarne
     if len(s) < 9 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@+]", s):

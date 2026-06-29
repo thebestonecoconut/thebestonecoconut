@@ -141,7 +141,8 @@ function Test-Content([string]$s) {
   if ($NoiseRe.IsMatch($s)) { return $false }
   $low = $s.ToLower()
   foreach ($k in $Keywords) { if ($low.Contains($k.ToLower())) { return $false } }
-  if (-not [regex]::IsMatch($s, '[0-9A-Za-z\u00A0-\u024F]')) { return $false }
+  # musi zawierac litere lub cyfre (dowolny alfabet/jezyk)
+  if (-not [regex]::IsMatch($s, '[\p{L}\p{Nd}]')) { return $false }
   # Krotkie tokeny bez spacji z "kodowymi" znakami to zwykle smieci z danych binarnych
   if ($s.Length -lt 9 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;%#$@+]') { return $false }
   return $true
