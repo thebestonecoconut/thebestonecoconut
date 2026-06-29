@@ -81,7 +81,35 @@ $Keywords  = @('BarTender','Seagull','btObject','btField','Microsoft','xmlns','s
   'Szablon','Warstwa','Pasek magnetyczny','Tekst procesora tekstu','Kontrolka przycisku',
   'Linia separatora','Formularz','Antena RFID','Obraz tła','Kolor tła','Numery seryjne',
   'Użyj ustawień drukarki','Wprowadź dan','Przykładowy tekst','Wspólne podprogramy',
-  'odwołania innym','Picture.bmp','Bar Tender','Format File')
+  'odwołania innym','Picture.bmp','Bar Tender','Format File','Dlg')
+
+# --- Filtr "rusztowania" BarTendera (metadane, drukarka, maski, nazwy obiektow) ---
+$MaskRe    = [regex]'^(?=.*[()#;_])[\d()#;_.\-,/+ ]{3,}$'
+$ObjRe     = New-Object System.Text.RegularExpressions.Regex(
+  '^(pole|tło|tlo|tekst|kopie|warstwa|szablon|formularz|format|etykieta|obiekt|grupa|ramka|linia|kod|obraz|strona|dane)\s*\d*:?$',
+  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$PrinterRe = New-Object System.Text.RegularExpressions.Regex(
+  'zdesigner|godex|zpl|epl2?|datamax|zebra|usb0\d|lpt\d|com\d',
+  [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$MetaPrefixes = @('application:','system:','document:','printer:','stock:','datasource','data source')
+$Fonts     = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($x in @('arial','tahoma','calibri','verdana','segoe ui','times new roman',
+  'courier new','helvetica','cambria','consolas','wingdings','symbol')) { [void]$Fonts.Add($x) }
+$JunkExact = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($x in @('user defined','ser defined','idbtlf','dlg','nice','tpmr','mdtn',
+  'bmp','picture','picture.bmp')) { [void]$JunkExact.Add($x) }
+
+function Test-Scaffolding([string]$s) {
+  $low = $s.ToLower()
+  foreach ($p in $MetaPrefixes) { if ($low.StartsWith($p)) { return $true } }
+  if ($low.Contains('compatibleversion') -or $low.Contains('archiveversion') -or $low.Contains('edition=automation')) { return $true }
+  if ($PrinterRe.IsMatch($s)) { return $true }
+  if ($MaskRe.IsMatch($s)) { return $true }
+  if ($s.Contains('ABCDEFGHIJKLMNOP') -or $s.Contains('0123456789')) { return $true }
+  if ($Fonts.Contains($low) -or $JunkExact.Contains($low)) { return $true }
+  if ($ObjRe.IsMatch($s)) { return $true }
+  return $false
+}
 
 # --- Konwersja RTF -> czysty tekst ---
 $RtfRe = New-Object System.Text.RegularExpressions.Regex(
@@ -141,10 +169,11 @@ function Test-Content([string]$s) {
   if ($NoiseRe.IsMatch($s)) { return $false }
   $low = $s.ToLower()
   foreach ($k in $Keywords) { if ($low.Contains($k.ToLower())) { return $false } }
-  # musi zawierac litere lub cyfre (dowolny alfabet/jezyk)
-  if (-not [regex]::IsMatch($s, '[\p{L}\p{Nd}]')) { return $false }
+  # musi zawierac litere (dowolny alfabet/jezyk)
+  if (-not [regex]::IsMatch($s, '\p{L}')) { return $false }
   # Krotkie tokeny bez spacji z "kodowymi" znakami to zwykle smieci z danych binarnych
-  if ($s.Length -lt 9 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;%#$@+]') { return $false }
+  if ($s.Length -lt 9 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;%#$@+/]') { return $false }
+  if (Test-Scaffolding $s) { return $false }
   return $true
 }
 

@@ -71,7 +71,7 @@ _INTERNAL_KEYWORDS = (
     "Kontrolka przycisku", "Linia separatora", "Formularz", "Antena RFID",
     "Obraz tła", "Kolor tła", "Numery seryjne", "Użyj ustawień drukarki",
     "Wprowadź dan", "Przykładowy tekst", "Wspólne podprogramy",
-    "odwołania innym", "Picture.bmp", "Bar Tender", "Format File",
+    "odwołania innym", "Picture.bmp", "Bar Tender", "Format File", "Dlg",
 )
 
 
@@ -259,6 +259,48 @@ def _scan_bytes(data: bytes, raw: bool) -> list[str]:
     return out
 
 
+# --- Filtr "rusztowania" BarTendera (metadane, drukarka, maski, nazwy obiektów) ---
+_MASK_RE = re.compile(r"^(?=.*[()#;_])[\d()#;_.\-,/+ ]{3,}$")
+_OBJ_RE = re.compile(
+    r"^(pole|tło|tlo|tekst|kopie|warstwa|szablon|formularz|format|etykieta|obiekt|"
+    r"grupa|ramka|linia|kod|obraz|strona|dane)\s*\d*:?$",
+    re.IGNORECASE,
+)
+_PRINTER_RE = re.compile(r"zdesigner|godex|zpl|epl2?|datamax|zebra|usb0\d|lpt\d|com\d", re.IGNORECASE)
+_META_PREFIXES = (
+    "application:", "system:", "document:", "printer:", "stock:",
+    "datasource", "data source",
+)
+_FONTS = {
+    "arial", "tahoma", "calibri", "verdana", "segoe ui", "times new roman",
+    "courier new", "helvetica", "cambria", "consolas", "wingdings", "symbol",
+}
+_JUNK_EXACT = {
+    "user defined", "ser defined", "idbtlf", "dlg", "nice", "tpmr", "mdtn",
+    "bmp", "picture", "picture.bmp",
+}
+
+
+def _is_scaffolding(s: str) -> bool:
+    """Czy linia to wewnętrzne 'rusztowanie' BarTendera (nie treść etykiety)."""
+    low = s.lower()
+    if low.startswith(_META_PREFIXES):
+        return True
+    if "compatibleversion" in low or "archiveversion" in low or "edition=automation" in low:
+        return True
+    if _PRINTER_RE.search(s):
+        return True
+    if _MASK_RE.match(s):
+        return True
+    if "ABCDEFGHIJKLMNOP" in s or "0123456789" in s:
+        return True
+    if low in _FONTS or low in _JUNK_EXACT:
+        return True
+    if _OBJ_RE.match(s):
+        return True
+    return False
+
+
 def _looks_like_content(s: str) -> bool:
     """Heurystyka: czy dany ciąg wygląda na realną treść etykiety."""
     if len(s) < 2:
@@ -267,11 +309,13 @@ def _looks_like_content(s: str) -> bool:
         return False
     if any(k.lower() in s.lower() for k in _INTERNAL_KEYWORDS):
         return False
-    # musi zawierać przynajmniej jedną literę lub cyfrę (dowolny alfabet/język)
-    if not any(ch.isalnum() for ch in s):
+    # musi zawierać przynajmniej jedną literę (dowolny alfabet/język)
+    if not any(ch.isalpha() for ch in s):
         return False
     # krótkie tokeny bez spacji z "kodowymi" znakami to zwykle śmieci binarne
-    if len(s) < 9 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@+]", s):
+    if len(s) < 9 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@+/]", s):
+        return False
+    if _is_scaffolding(s):
         return False
     return True
 
