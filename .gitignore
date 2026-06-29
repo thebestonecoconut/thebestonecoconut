@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+# pliki wynikowe
+*.pdf
+*.txt
+!requirements.txt
