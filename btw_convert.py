@@ -63,9 +63,15 @@ _INTERNAL_KEYWORDS = (
     "PrintJobFieldDs", "BackgroundRFIDData", "ScreenDs", "ScriptEvent",
     "PredefinedStocksPage", "StatusPage", "DesignTemplatePage", "Status Page",
     "Print Quantity", "PrinterCopies", "SerializedCount", "BatchCount",
-    "FormatID", "NICELbl", "Functions and Subs", "OnProcessData",
+    "FormatID", "NICELbl",     "Functions and Subs", "OnProcessData",
     "OnPostSerialize", "Box Options", "Dialog Control", "Line Control",
     "Root.Folder", "Word Processor", "Default Paragraph Font",
+    # Domyślne (auto-generowane) polskie nazwy obiektów BarTendera
+    "Szablon", "Warstwa", "Pasek magnetyczny", "Tekst procesora tekstu",
+    "Kontrolka przycisku", "Linia separatora", "Formularz", "Antena RFID",
+    "Obraz tła", "Kolor tła", "Numery seryjne", "Użyj ustawień drukarki",
+    "Wprowadź dan", "Przykładowy tekst", "Wspólne podprogramy",
+    "odwołania innym", "Picture.bmp", "Bar Tender", "Format File",
 )
 
 
@@ -90,8 +96,8 @@ _ENTITIES = (
 # --- Konwersja RTF -> czysty tekst -------------------------------------------
 
 _RTF_RE = re.compile(
-    r"\\([a-z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)",
-    re.IGNORECASE | re.DOTALL,
+    r"\\([a-zA-Z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-zA-Z])|([{}])|[\r\n]+|(.)",
+    re.DOTALL,
 )
 _RTF_DESTINATIONS = frozenset((
     "fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "objdata",
@@ -265,7 +271,7 @@ def _looks_like_content(s: str) -> bool:
     if not re.search(r"[0-9A-Za-z\u00A0-\u024F]", s):
         return False
     # krótkie tokeny bez spacji z "kodowymi" znakami to zwykle śmieci binarne
-    if len(s) < 8 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@]", s):
+    if len(s) < 9 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@+]", s):
         return False
     return True
 

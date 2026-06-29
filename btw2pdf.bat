@@ -80,11 +80,15 @@ $Keywords  = @('BarTender','Seagull','btObject','btField','Microsoft','xmlns','s
   'ScreenDs','ScriptEvent','PredefinedStocksPage','StatusPage','DesignTemplatePage','Status Page',
   'Print Quantity','PrinterCopies','SerializedCount','BatchCount','FormatID','NICELbl',
   'Functions and Subs','OnProcessData','OnPostSerialize','Box Options','Dialog Control',
-  'Line Control','Root.Folder','Word Processor','Default Paragraph Font')
+  'Line Control','Root.Folder','Word Processor','Default Paragraph Font',
+  'Szablon','Warstwa','Pasek magnetyczny','Tekst procesora tekstu','Kontrolka przycisku',
+  'Linia separatora','Formularz','Antena RFID','Obraz tła','Kolor tła','Numery seryjne',
+  'Użyj ustawień drukarki','Wprowadź dan','Przykładowy tekst','Wspólne podprogramy',
+  'odwołania innym','Picture.bmp','Bar Tender','Format File')
 
 # --- Konwersja RTF -> czysty tekst ---
 $RtfRe = New-Object System.Text.RegularExpressions.Regex(
-  "\\([a-z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)",
+  "\\([a-zA-Z]{1,32})(-?\d{1,10})?[ ]?|\\'([0-9a-fA-F]{2})|\\([^a-zA-Z])|([{}])|[\r\n]+|(.)",
   [System.Text.RegularExpressions.RegexOptions]::Singleline)
 $RtfDest = New-Object 'System.Collections.Generic.HashSet[string]'
 foreach ($d in @('fonttbl','colortbl','stylesheet','info','pict','object','objdata','listtable',
@@ -142,7 +146,7 @@ function Test-Content([string]$s) {
   foreach ($k in $Keywords) { if ($low.Contains($k.ToLower())) { return $false } }
   if (-not [regex]::IsMatch($s, '[0-9A-Za-z\u00A0-\u024F]')) { return $false }
   # Krotkie tokeny bez spacji z "kodowymi" znakami to zwykle smieci z danych binarnych
-  if ($s.Length -lt 8 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;]') { return $false }
+  if ($s.Length -lt 9 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;%#$@+]') { return $false }
   return $true
 }
 
