@@ -23,7 +23,7 @@ set "BTW_DEFAULT=%~dp0"
 set "TMPPS=%TEMP%\btw2pdf_%RANDOM%%RANDOM%.ps1"
 
 REM Wyodrebnij sekcje PowerShell z tego pliku (wszystko po znaczniku ponizej)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw=[System.Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('%~f0')); $m=[char]35+'PSSTART'; $i=$raw.IndexOf($m); $code=$raw.Substring($i+$m.Length); [IO.File]::WriteAllText($env:TMPPS,$code,(New-Object System.Text.UTF8Encoding($false)))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$raw=[System.Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes('%~f0')); $m=[char]35+'PSSTART'; $i=$raw.IndexOf($m); $code=$raw.Substring($i+$m.Length); [IO.File]::WriteAllText($env:TMPPS,$code,(New-Object System.Text.UTF8Encoding($true)))"
 
 REM Uruchom wlasciwa logike (przekazuje przeciagniete pliki/foldery)
 powershell -NoProfile -ExecutionPolicy Bypass -File "%TMPPS%" %*
