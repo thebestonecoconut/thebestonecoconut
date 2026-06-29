@@ -81,6 +81,8 @@ function Test-Content([string]$s) {
   $low = $s.ToLower()
   foreach ($k in $Keywords) { if ($low.Contains($k.ToLower())) { return $false } }
   if (-not [regex]::IsMatch($s, '[0-9A-Za-z\u00A0-\u024F]')) { return $false }
+  # Krotkie tokeny bez spacji z "kodowymi" znakami to zwykle smieci z danych binarnych
+  if ($s.Length -lt 8 -and $s -notmatch '\s' -and $s -match '[()&*<>|{}\[\]^~`\\=;]') { return $false }
   return $true
 }
 
@@ -98,21 +100,88 @@ function Expand-Region([string]$text, [bool]$raw, $runs) {
   }
 }
 
-function Get-BtwLines([string]$File, [bool]$raw) {
-  $bytes = [System.IO.File]::ReadAllBytes($File)
-  $blob  = $Latin1.GetString($bytes)   # 1 znak = 1 bajt (0-255)
-  $runs  = New-Object System.Collections.Generic.List[string]
-
-  # 1) tekst UTF-16LE (najczestszy w BarTenderze)
-  foreach ($m in $Utf16Re.Matches($blob)) {
+# Wyciaga tekst UTF-16LE i UTF-8 z danego ciagu (kazdy znak = 1 bajt 0-255).
+function Add-Strings([string]$s, [bool]$raw, $runs) {
+  foreach ($m in $Utf16Re.Matches($s)) {
     $mb = $Latin1.GetBytes($m.Value)
     Expand-Region ([System.Text.Encoding]::Unicode.GetString($mb)) $raw $runs
   }
-  # 2) tekst ASCII / UTF-8 (obejmuje takze zwykle ASCII)
-  foreach ($m in $Utf8Re.Matches($blob)) {
+  foreach ($m in $Utf8Re.Matches($s)) {
     $mb = $Latin1.GetBytes($m.Value)
     Expand-Region ($Utf8.GetString($mb)) $raw $runs
   }
+}
+
+# Probuje rozpakowac surowy strumien DEFLATE zaczynajacy sie pod $start.
+function Try-Inflate([byte[]]$bytes, [int]$start) {
+  try {
+    $in  = New-Object System.IO.MemoryStream
+    $in.Write($bytes, $start, $bytes.Length - $start)
+    $in.Position = 0
+    $def = New-Object System.IO.Compression.DeflateStream($in, [System.IO.Compression.CompressionMode]::Decompress)
+    $out = New-Object System.IO.MemoryStream
+    $buf = New-Object byte[] 16384
+    while (($n = $def.Read($buf, 0, $buf.Length)) -gt 0) { $out.Write($buf, 0, $n) }
+    $def.Dispose()
+    return $out.ToArray()
+  } catch { return $null }
+}
+
+# Adler-32 (suma kontrolna konczaca strumien zlib) jako 4 bajty big-endian.
+function Get-Adler32Bytes([byte[]]$data) {
+  $a = 1; $b = 0; $M = 65521
+  foreach ($x in $data) { $a = ($a + $x) % $M; $b = ($b + $a) % $M }
+  return [byte[]]@(
+    [byte](($b -shr 8) -band 0xFF), [byte]($b -band 0xFF),
+    [byte](($a -shr 8) -band 0xFF), [byte]($a -band 0xFF)
+  )
+}
+
+function IndexOf-Bytes([byte[]]$hay, [byte[]]$needle, [int]$from) {
+  for ($k = $from; $k -le $hay.Length - $needle.Length; $k++) {
+    $ok = $true
+    for ($j = 0; $j -lt $needle.Length; $j++) {
+      if ($hay[$k + $j] -ne $needle[$j]) { $ok = $false; break }
+    }
+    if ($ok) { return $k }
+  }
+  return -1
+}
+
+function Get-BtwLines([string]$File, [bool]$raw) {
+  $bytes = [System.IO.File]::ReadAllBytes($File)
+  $blob  = $Latin1.GetString($bytes)   # 1 znak = 1 bajt (0-255)
+
+  # Usun osadzone obrazy PNG (podglad etykiety) - to one generuja wiekszosc smieci.
+  $blob = [regex]::Replace($blob, "\x89PNG\r\n\x1A\n.*?IEND.{4}", " ",
+                           [System.Text.RegularExpressions.RegexOptions]::Singleline)
+
+  $runs = New-Object System.Collections.Generic.List[string]
+  $work = $Latin1.GetBytes($blob)
+
+  # 1) Rozpakuj skompresowane (zlib/deflate) fragmenty - tam siedzi tresc etykiety.
+  #    Po udanym rozpakowaniu "wygaszamy" skompresowany obszar (do sumy Adler-32),
+  #    zeby jego surowe bajty nie trafily do wyniku jako smieci.
+  $attempts = 0
+  for ($i = 0; $i -lt $work.Length - 2; $i++) {
+    if ($work[$i] -ne 0x78) { continue }
+    $h = ([int]$work[$i] -shl 8) -bor [int]$work[$i+1]
+    if (($h % 31) -ne 0) { continue }          # naglowek zlib spelnia regule mod 31
+    if ($attempts -ge 60000) { break }
+    $attempts++
+    $inf = Try-Inflate $work ($i + 2)
+    if ($inf -and $inf.Length -gt 16) {
+      Add-Strings ($Latin1.GetString($inf)) $raw $runs
+      $adler = Get-Adler32Bytes $inf
+      $p = IndexOf-Bytes $work $adler ($i + 2)
+      $end = if ($p -ge 0) { $p + 4 } else { $i + 2 }
+      for ($j = $i; $j -lt $end -and $j -lt $work.Length; $j++) { $work[$j] = 0 }
+      if ($end -gt $i) { $i = $end - 1 }
+    }
+  }
+
+  # 2) Czysty tekst (UTF-16 / UTF-8) z pozostalej czesci (m.in. metadane naglowka).
+  Add-Strings ($Latin1.GetString($work)) $raw $runs
 
   $seen  = New-Object System.Collections.Generic.HashSet[string]
   $lines = New-Object System.Collections.Generic.List[string]

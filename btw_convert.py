@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import zlib
 from pathlib import Path
 
 try:
@@ -67,6 +68,8 @@ _UTF16_RUN_RE = re.compile(rb"(?:[\x20-\xff][\x00-\x04]){2,}")
 _UTF8_RUN_RE = re.compile(
     rb"(?:[\x20-\x7e]|[\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}){3,}"
 )
+# Osadzony obraz PNG (podgląd etykiety) — usuwamy, bo to źródło większości śmieci.
+_PNG_RE = re.compile(rb"\x89PNG\r\n\x1a\n.*?IEND.{4}", re.DOTALL)
 # Usuwanie znaczników XML (z zachowaniem treści między nimi).
 _TAG_RE = re.compile(r"<[^<>]{0,500}>")
 _SPLIT_RE = re.compile(r"\s{2,}|[\r\n\t]+")
@@ -100,21 +103,61 @@ def _expand_region(text: str, raw: bool, out: list[str]) -> None:
                 out.append(cleaned)
 
 
-def _decode_runs(data: bytes, raw: bool = False) -> list[str]:
-    """Zwraca listę czytelnych ciągów znaków znalezionych w surowych bajtach.
+def _decode_runs(data: bytes, raw: bool, out: list[str]) -> None:
+    """Dorzuca do `out` tekst UTF-16LE i UTF-8 znaleziony w surowych bajtach.
 
     Szuka osobno tekstu UTF-16LE (najczęstszy w BarTenderze) oraz UTF-8/ASCII,
     dzięki czemu unika śmieci powstających przy "ślepym" dekodowaniu strumienia.
     """
-    results: list[str] = []
-
     for chunk in _UTF16_RUN_RE.findall(data):
-        _expand_region(chunk.decode("utf-16-le", errors="ignore"), raw, results)
+        _expand_region(chunk.decode("utf-16-le", errors="ignore"), raw, out)
 
     for chunk in _UTF8_RUN_RE.findall(data):
-        _expand_region(chunk.decode("utf-8", errors="ignore"), raw, results)
+        _expand_region(chunk.decode("utf-8", errors="ignore"), raw, out)
 
-    return results
+
+def _scan_bytes(data: bytes, raw: bool) -> list[str]:
+    """Wyciąga tekst z bajtów: usuwa osadzone PNG i rozpakowuje strumienie zlib.
+
+    BarTender trzyma podgląd etykiety jako PNG (śmieci) oraz właściwą treść
+    skompresowaną (deflate/zlib). Najpierw usuwamy PNG, potem znajdujemy i
+    rozpakowujemy strumienie zlib (tam jest tekst etykiety), a ich skompresowane
+    bajty „wygaszamy", żeby nie trafiły do wyniku jako śmieci.
+    """
+    out: list[str] = []
+    work = bytearray(_PNG_RE.sub(b"  ", data))
+    n = len(work)
+
+    i = 0
+    attempts = 0
+    while i < n - 2:
+        if work[i] != 0x78:
+            i += 1
+            continue
+        if ((work[i] << 8) | work[i + 1]) % 31 != 0:  # reguła nagłówka zlib (mod 31)
+            i += 1
+            continue
+        if attempts >= 60000:
+            break
+        attempts += 1
+        try:
+            dec = zlib.decompressobj()
+            inflated = dec.decompress(bytes(work[i:]))
+            inflated += dec.flush()
+            consumed = n - i - len(dec.unused_data)
+        except Exception:
+            i += 1
+            continue
+        if len(inflated) > 16 and consumed >= 2:
+            _decode_runs(inflated, raw, out)
+            for j in range(i, min(i + consumed, n)):
+                work[j] = 0
+            i += consumed
+        else:
+            i += 1
+
+    _decode_runs(bytes(work), raw, out)
+    return out
 
 
 def _looks_like_content(s: str) -> bool:
@@ -127,6 +170,9 @@ def _looks_like_content(s: str) -> bool:
         return False
     # musi zawierać przynajmniej jedną literę lub cyfrę
     if not re.search(r"[0-9A-Za-z\u00A0-\u024F]", s):
+        return False
+    # krótkie tokeny bez spacji z "kodowymi" znakami to zwykle śmieci binarne
+    if len(s) < 8 and not re.search(r"\s", s) and re.search(r"[()&*<>|{}\[\]^~`\\=;%#$@]", s):
         return False
     return True
 
@@ -145,10 +191,10 @@ def extract_text_from_btw(path: Path, raw: bool = False) -> list[str]:
                     data = ole.openstream(stream).read()
                 except Exception:
                     continue
-                raw_runs.extend(_decode_runs(data, raw))
+                raw_runs.extend(_scan_bytes(data, raw))
     else:
         # Plik nie jest OLE (lub brak olefile) — fallback: surowe wycinanie ciągów.
-        raw_runs.extend(_decode_runs(path.read_bytes(), raw))
+        raw_runs.extend(_scan_bytes(path.read_bytes(), raw))
 
     # Usuwanie duplikatów z zachowaniem kolejności (+ filtrowanie poza trybem raw).
     seen: set[str] = set()
