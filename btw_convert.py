@@ -63,31 +63,56 @@ _INTERNAL_KEYWORDS = (
 # UTF-16LE: znak (młodszy bajt 0x20-0xFF) + starszy bajt 0x00-0x04
 # (pokrywa ASCII, Latin-1 oraz polskie znaki z Latin Extended, U+0000–U+04FF).
 _UTF16_RUN_RE = re.compile(rb"(?:[\x20-\xff][\x00-\x04]){2,}")
-# Czysty ASCII (drukowalny) — łapie metadane/teksty zapisane jednobajtowo.
-_ASCII_RUN_RE = re.compile(rb"[\x20-\x7e]{3,}")
+# UTF-8: ASCII drukowalne + sekwencje 2- i 3-bajtowe (polskie znaki, €, myślniki).
+_UTF8_RUN_RE = re.compile(
+    rb"(?:[\x20-\x7e]|[\xc2-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}){3,}"
+)
+# Usuwanie znaczników XML (z zachowaniem treści między nimi).
+_TAG_RE = re.compile(r"<[^<>]{0,500}>")
+_SPLIT_RE = re.compile(r"\s{2,}|[\r\n\t]+")
+_ENTITIES = (
+    ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+    ("&quot;", '"'), ("&apos;", "'"), ("&#39;", "'"),
+)
 
 
-def _decode_runs(data: bytes) -> list[str]:
+def _expand_region(text: str, raw: bool, out: list[str]) -> None:
+    """Dla zdekodowanego fragmentu dorzuca do `out` znalezione ciągi znaków.
+
+    W trybie zwykłym dekoduje encje XML i usuwa znaczniki (zostawiając treść);
+    w trybie raw zwraca wszystko bez zmian.
+    """
+    if raw:
+        for match in _RUN_RE.findall(text):
+            cleaned = match.strip()
+            if cleaned:
+                out.append(cleaned)
+        return
+
+    t = text
+    for ent, ch in _ENTITIES:
+        t = t.replace(ent, ch)
+    t = _TAG_RE.sub("  ", t)
+    for piece in _SPLIT_RE.split(t):
+        for match in _RUN_RE.findall(piece):
+            cleaned = match.strip()
+            if cleaned:
+                out.append(cleaned)
+
+
+def _decode_runs(data: bytes, raw: bool = False) -> list[str]:
     """Zwraca listę czytelnych ciągów znaków znalezionych w surowych bajtach.
 
-    Szuka osobno tekstu UTF-16LE (najczęstszy w BarTenderze) oraz ASCII, dzięki
-    czemu unika śmieci powstających przy "ślepym" dekodowaniu całego strumienia.
+    Szuka osobno tekstu UTF-16LE (najczęstszy w BarTenderze) oraz UTF-8/ASCII,
+    dzięki czemu unika śmieci powstających przy "ślepym" dekodowaniu strumienia.
     """
     results: list[str] = []
 
-    for raw in _UTF16_RUN_RE.findall(data):
-        text = raw.decode("utf-16-le", errors="ignore")
-        for match in _RUN_RE.findall(text):
-            cleaned = match.strip()
-            if cleaned:
-                results.append(cleaned)
+    for chunk in _UTF16_RUN_RE.findall(data):
+        _expand_region(chunk.decode("utf-16-le", errors="ignore"), raw, results)
 
-    for raw in _ASCII_RUN_RE.findall(data):
-        text = raw.decode("ascii", errors="ignore")
-        for match in _RUN_RE.findall(text):
-            cleaned = match.strip()
-            if cleaned:
-                results.append(cleaned)
+    for chunk in _UTF8_RUN_RE.findall(data):
+        _expand_region(chunk.decode("utf-8", errors="ignore"), raw, results)
 
     return results
 
@@ -106,8 +131,11 @@ def _looks_like_content(s: str) -> bool:
     return True
 
 
-def extract_text_from_btw(path: Path) -> list[str]:
-    """Wyciąga uporządkowaną listę linii tekstu z pliku .btw."""
+def extract_text_from_btw(path: Path, raw: bool = False) -> list[str]:
+    """Wyciąga uporządkowaną listę linii tekstu z pliku .btw.
+
+    raw=True: zwraca wszystkie znalezione ciągi bez filtrowania (do weryfikacji).
+    """
     raw_runs: list[str] = []
 
     if olefile is not None and olefile.isOleFile(str(path)):
@@ -117,17 +145,19 @@ def extract_text_from_btw(path: Path) -> list[str]:
                     data = ole.openstream(stream).read()
                 except Exception:
                     continue
-                raw_runs.extend(_decode_runs(data))
+                raw_runs.extend(_decode_runs(data, raw))
     else:
         # Plik nie jest OLE (lub brak olefile) — fallback: surowe wycinanie ciągów.
-        raw_runs.extend(_decode_runs(path.read_bytes()))
+        raw_runs.extend(_decode_runs(path.read_bytes(), raw))
 
-    # Filtrowanie + usuwanie duplikatów z zachowaniem kolejności.
+    # Usuwanie duplikatów z zachowaniem kolejności (+ filtrowanie poza trybem raw).
     seen: set[str] = set()
     lines: list[str] = []
     for run in raw_runs:
         candidate = run.strip()
-        if not _looks_like_content(candidate):
+        if len(candidate) < 2:
+            continue
+        if not raw and not _looks_like_content(candidate):
             continue
         if candidate in seen:
             continue
@@ -215,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pdf-only", action="store_true", help="Zapisz tylko PDF (bez .txt)")
     parser.add_argument("--combined-pdf", metavar="PLIK.pdf",
                         help="Zapisz jeden wspólny PDF dla wszystkich etykiet")
+    parser.add_argument("--raw", action="store_true",
+                        help="Bez filtrowania — wypisz WSZYSTKIE znalezione ciągi (do weryfikacji)")
     args = parser.parse_args(argv)
 
     if olefile is None:
@@ -239,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     sections: list[tuple[str, list[str]]] = []
     for f in files:
         try:
-            lines = extract_text_from_btw(f)
+            lines = extract_text_from_btw(f, raw=args.raw)
         except Exception as exc:
             print(f"  ! Pominięto {f.name}: {exc}", file=sys.stderr)
             continue
