@@ -1,28 +1,30 @@
-# Konwerter etykiet BarTender (.btw) → tekst (i PDF jako dodatek)
+# Konwerter etykiet BarTender (.btw) → tekst (.txt)
 
-Wyciąga **tekst** z plików etykiet BarTender (`.btw`) do pliku tekstowego
-(`.txt`). PDF jest tylko dodatkiem — **najważniejszy jest poprawny plik `.txt`**.
+Wyciąga **tekst** z plików etykiet BarTender (`.btw`) do pliku tekstowego (`.txt`).
 
-Dostępne są dwie wersje (robią to samo z tekstem):
+Dostępne są dwie wersje:
 
 | Wersja | Plik | Wymaga instalacji? | Kiedy używać |
 |--------|------|--------------------|--------------|
-| **BAT (Windows)** | `btw2pdf.bat` | **NIE** (PowerShell + Edge są w Windows 10/11) | Najprościej — klik / przeciągnij |
-| Python | `btw_convert.py` | tak (`olefile`, `fpdf2`) | Gdy wolisz Pythona / inny system |
+| **BAT (Windows)** | `btw2pdf.bat` | **NIE** (wbudowany PowerShell) | Najprościej — klik / przeciągnij |
+| Python | `btw_convert.py` | tak (`olefile`) | Gdy wolisz Pythona / inny system |
 
 ## Ważne o formacie .btw
 
 Pliki `.btw` to dokumenty OLE2 z programu **BarTender** (Seagull Scientific) —
 format zamknięty, binarny. Narzędzie wyciąga z nich **zawartość tekstową**
-(nazwy, składy, kody EAN, ceny). Wierne odwzorowanie grafiki etykiety
-(kody kreskowe, układ) potrafi tylko sam BarTender.
+(nazwy, opisy, składy, wartości odżywcze, dystrybutor). Wierne odwzorowanie
+grafiki etykiety (kody kreskowe, układ) potrafi tylko sam BarTender.
 
 Co obsługuje ekstrakcja tekstu:
 
-- tekst w **UTF‑16** (najczęstszy w BarTenderze) oraz **UTF‑8 / ASCII**,
-- **polskie znaki** (ą, ć, ę, ł, ń, ó, ś, ź, ż) — zapis w UTF‑8,
-- treść „zatopioną" w **XML** (znaczniki są usuwane, encje `&amp;` → `&`),
-- odfiltrowanie typowych śmieci (kody hex, GUID-y, wewnętrzne nazwy BarTendera).
+- usuwanie osadzonego podglądu **PNG** (główne źródło śmieci),
+- **rozpakowywanie** skompresowanych (zlib/deflate) fragmentów — tam jest treść,
+- konwersję **RTF → czysty tekst** (dekodowanie `\uN`/`\'xx`, tabele, usuwanie formatowania),
+- tekst w **UTF‑16** oraz **UTF‑8 / ASCII** (wieloliniowy),
+- **polskie i niemieckie znaki** (ą, ć, ę, ł, ó, ä, ö, ü, ß…),
+- treść w **XML** (znaczniki usuwane, encje `&amp;` → `&`),
+- odfiltrowanie śmieci binarnych i wewnętrznych nazw obiektów BarTendera.
 
 ---
 
@@ -37,19 +39,16 @@ Co obsługuje ekstrakcja tekstu:
      btw2pdf.bat "C:\sciezka\do\folderu"
      ```
 
-Obok każdej etykiety powstanie plik `.txt` (oraz `.pdf`, jeśli dostępny Edge).
+Obok każdej etykiety powstanie plik `.txt`.
 
 ### Opcje
 
 ```bat
-btw2pdf.bat --txt "C:\folder"     :: tylko pliki tekstowe (bez PDF)
 btw2pdf.bat --raw "C:\folder"     :: WSZYSTKIE znalezione ciągi (bez filtrowania)
 ```
 
 > **Weryfikacja poprawności:** jeśli masz wrażenie, że w `.txt` czegoś brakuje,
-> uruchom z opcją `--raw`. Zobaczysz wtedy wszystko, co da się odczytać z pliku —
-> dzięki temu można sprawdzić, że żadna treść nie ginie, i ewentualnie dostroić
-> filtry.
+> uruchom z opcją `--raw`. Zobaczysz wtedy wszystko, co da się odczytać z pliku.
 
 ---
 
@@ -62,24 +61,19 @@ pip install -r requirements.txt
 ```
 
 ```bash
-python btw_convert.py etykieta.btw              # -> etykieta.txt + etykieta.pdf
+python btw_convert.py etykieta.btw              # -> etykieta.txt
 python btw_convert.py folder/                   # cały folder (rekurencyjnie)
 python btw_convert.py folder/ -o wyniki/        # zapis do innego folderu
-python btw_convert.py folder/ --txt-only        # tylko tekst
-python btw_convert.py folder/ --raw --txt-only  # wszystkie ciągi (weryfikacja)
-python btw_convert.py folder/ --combined-pdf wszystkie.pdf
+python btw_convert.py folder/ --raw             # wszystkie ciągi (weryfikacja)
 ```
 
 ---
 
 ## Co dostajesz
 
-- `*.txt` — czysty tekst, kodowanie **UTF‑8** (polskie znaki działają).
-- `*.pdf` *(dodatek)* — czytelny PDF z treścią etykiety.
-  W wersji BAT PDF tworzy wbudowany Edge; gdy go nie ma, zapisywany jest plik
-  `.html`, który można wydrukować do PDF (Ctrl+P → „Microsoft Print to PDF").
+- `*.txt` — czysty tekst, kodowanie **UTF‑8** (polskie i niemieckie znaki działają).
 
 ## Uwaga
 
 Najlepszy efekt uzyskasz, podsyłając jeden przykładowy plik `.btw` — wtedy można
-porównać `.txt` z `--raw` i precyzyjnie dostroić, co ma trafiać do wyniku.
+porównać wynik z `--raw` i precyzyjnie dostroić filtry.

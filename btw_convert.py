@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
 btw_convert.py — wyciąga tekst z plików etykiet BarTender (.btw) i zapisuje
-go do pliku tekstowego (.txt) oraz do PDF.
+go do pliku tekstowego (.txt).
 
 Pliki .btw to dokumenty OLE2 (Compound File Binary Format) tworzone przez
 program BarTender (Seagull Scientific). Wewnątrz przechowują m.in. teksty
-etykiet (zwykle jako XML / tekst w kodowaniu UTF-16). Ten skrypt otwiera taki
-plik, wydobywa z niego czytelne ciągi znaków i zapisuje je w formie tekstu/PDF.
+etykiet (zwykle jako RTF / XML / tekst w kodowaniu UTF-16, często skompresowane
+zlib). Ten skrypt otwiera taki plik, wydobywa z niego czytelne ciągi znaków
+i zapisuje je w pliku tekstowym.
 
 UWAGA: pełne, "pixel-perfect" odwzorowanie wyglądu etykiety (kody kreskowe,
 grafiki, układ) potrafi wygenerować TYLKO sam BarTender. Ten skrypt służy do
 wyciągnięcia ZAWARTOŚCI TEKSTOWEJ etykiet.
 
 Użycie:
-    python btw_convert.py PLIK.btw                  # -> PLIK.txt i PLIK.pdf
+    python btw_convert.py PLIK.btw                  # -> PLIK.txt
     python btw_convert.py folder/                   # konwertuje wszystkie .btw
     python btw_convert.py folder/ -o wyniki/        # zapis do innego folderu
-    python btw_convert.py folder/ --combined-pdf etykiety.pdf
-    python btw_convert.py PLIK.btw --txt-only       # tylko .txt (bez PDF)
+    python btw_convert.py PLIK.btw --raw            # wszystkie ciągi (weryfikacja)
 """
 
 from __future__ import annotations
@@ -318,58 +318,6 @@ def write_txt(lines: list[str], dest: Path, source_name: str) -> None:
     dest.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_pdf(sections: list[tuple[str, list[str]]], dest: Path) -> None:
-    """Tworzy PDF. `sections` to lista (nazwa_pliku, linie)."""
-    from fpdf import FPDF
-
-    pdf = FPDF(format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
-
-    # Czcionka z obsługą Unicode (jeśli dostępna w systemie), inaczej Helvetica.
-    font_family = "Helvetica"
-    unicode_font = _find_unicode_font()
-    if unicode_font is not None:
-        try:
-            pdf.add_font("DejaVu", "", str(unicode_font))
-            pdf.add_font("DejaVu", "B", str(unicode_font))
-            font_family = "DejaVu"
-        except Exception:
-            font_family = "Helvetica"
-
-    def out(text: str) -> str:
-        if font_family == "Helvetica":
-            # Helvetica = Latin-1; zastąp nieobsługiwane znaki.
-            return text.encode("latin-1", "replace").decode("latin-1")
-        return text
-
-    width = pdf.epw  # efektywna szerokość strony (bez marginesów)
-    for name, lines in sections:
-        pdf.add_page()
-        pdf.set_font(font_family, "B", 14)
-        pdf.multi_cell(width, 8, out(f"Etykieta: {name}"), wrapmode="CHAR")
-        pdf.ln(2)
-        pdf.set_font(font_family, "", 11)
-        if not lines:
-            pdf.multi_cell(width, 6, out("(nie znaleziono tekstu)"), wrapmode="CHAR")
-        for line in lines:
-            pdf.multi_cell(width, 6, out("- " + line), wrapmode="CHAR")
-
-    pdf.output(str(dest))
-
-
-def _find_unicode_font() -> Path | None:
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-    ]
-    for c in candidates:
-        if Path(c).exists():
-            return Path(c)
-    return None
-
-
 # --- CLI ---------------------------------------------------------------------
 
 def collect_btw_files(target: Path) -> list[Path]:
@@ -382,20 +330,16 @@ def collect_btw_files(target: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Konwersja etykiet BarTender (.btw) do tekstu i PDF."
+        description="Konwersja etykiet BarTender (.btw) do plików tekstowych (.txt)."
     )
     parser.add_argument("input", help="Plik .btw lub folder z plikami .btw")
     parser.add_argument("-o", "--output-dir", help="Folder docelowy (domyślnie obok plików źródłowych)")
-    parser.add_argument("--txt-only", action="store_true", help="Zapisz tylko .txt (bez PDF)")
-    parser.add_argument("--pdf-only", action="store_true", help="Zapisz tylko PDF (bez .txt)")
-    parser.add_argument("--combined-pdf", metavar="PLIK.pdf",
-                        help="Zapisz jeden wspólny PDF dla wszystkich etykiet")
     parser.add_argument("--raw", action="store_true",
                         help="Bez filtrowania — wypisz WSZYSTKIE znalezione ciągi (do weryfikacji)")
     args = parser.parse_args(argv)
 
     if olefile is None:
-        print("BŁĄD: brak biblioteki 'olefile'. Zainstaluj: pip install olefile fpdf2",
+        print("BŁĄD: brak biblioteki 'olefile'. Zainstaluj: pip install olefile",
               file=sys.stderr)
         return 2
 
@@ -413,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    sections: list[tuple[str, list[str]]] = []
+    count = 0
     for f in files:
         try:
             lines = extract_text_from_btw(f, raw=args.raw)
@@ -421,27 +365,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! Pominięto {f.name}: {exc}", file=sys.stderr)
             continue
 
-        sections.append((f.name, lines))
         base_dir = out_dir if out_dir else f.parent
+        txt_path = base_dir / (f.stem + ".txt")
+        write_txt(lines, txt_path, f.name)
+        print(f"  ✓ {txt_path}  ({len(lines)} linii)")
+        count += 1
 
-        if not args.pdf_only:
-            txt_path = base_dir / (f.stem + ".txt")
-            write_txt(lines, txt_path, f.name)
-            print(f"  ✓ {txt_path}  ({len(lines)} linii)")
-
-        if not args.txt_only and not args.combined_pdf:
-            pdf_path = base_dir / (f.stem + ".pdf")
-            write_pdf([(f.name, lines)], pdf_path)
-            print(f"  ✓ {pdf_path}")
-
-    if args.combined_pdf and not args.txt_only:
-        combined = Path(args.combined_pdf).expanduser()
-        if out_dir and not combined.is_absolute():
-            combined = out_dir / combined
-        write_pdf(sections, combined)
-        print(f"  ✓ Wspólny PDF: {combined}")
-
-    print(f"\nGotowe. Przetworzono {len(sections)} plików.")
+    print(f"\nGotowe. Przetworzono {count} plików.")
     return 0
 
 

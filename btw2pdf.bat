@@ -1,13 +1,11 @@
 @echo off
 setlocal EnableExtensions
 chcp 65001 >nul
-title Konwerter etykiet BarTender (.btw) -^> TXT + PDF
+title Konwerter etykiet BarTender (.btw) -^> TXT
 REM ===================================================================
 REM  btw2pdf.bat
-REM  Wyciaga tekst z etykiet BarTender (.btw) do plikow TXT i PDF.
-REM  NIE wymaga instalacji - uzywa rzeczy wbudowanych w Windows 10/11:
-REM    * Windows PowerShell (TXT + odczyt .btw)
-REM    * Microsoft Edge w trybie headless (generowanie PDF)
+REM  Wyciaga tekst z etykiet BarTender (.btw) do plikow TXT.
+REM  NIE wymaga instalacji - uzywa wbudowanego w Windows PowerShell.
 REM
 REM  Uzycie:
 REM    1) Przeciagnij plik .btw albo CALY FOLDER na ten plik .bat, lub
@@ -16,8 +14,8 @@ REM    3) Sam dwuklik = przetwarza wszystkie .btw w folderze z tym .bat
 REM ===================================================================
 
 echo ================================================================
-echo  Konwerter etykiet BarTender (.btw)  -^>  TXT + PDF
-echo  Bez instalacji: PowerShell + Microsoft Edge (Windows 10/11)
+echo  Konwerter etykiet BarTender (.btw)  -^>  TXT
+echo  Bez instalacji: uzywa wbudowanego PowerShell
 echo ================================================================
 echo.
 
@@ -43,15 +41,14 @@ param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Paths)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Obsluga przelacznikow przekazanych obok sciezek (np.  --raw,  --no-pdf)
-$Raw   = $false
-$NoPdf = $false
+# Obsluga przelacznikow przekazanych obok sciezek (np.  --raw)
+$Raw = $false
 if ($Paths) {
   $clean = New-Object System.Collections.Generic.List[string]
   foreach ($a in $Paths) {
     switch -regex ($a) {
-      '^(?i)(--?raw|/raw)$'              { $Raw   = $true; continue }
-      '^(?i)(--?no-?pdf|/nopdf|--?txt)$' { $NoPdf = $true; continue }
+      '^(?i)(--?raw|/raw)$'              { $Raw = $true; continue }
+      '^(?i)(--?no-?pdf|/nopdf|--?txt)$' { continue }   # akceptowane, ignorowane
       default                            { $clean.Add($a) }
     }
   }
@@ -267,61 +264,10 @@ function Get-BtwLines([string]$File, [bool]$raw) {
   return ,$lines.ToArray()
 }
 
-function Convert-HtmlEscape([string]$s) {
-  return $s.Replace('&','&amp;').Replace('<','&lt;').Replace('>','&gt;')
-}
-
-function Build-Html([string]$name, [string[]]$lines) {
-  $sb = New-Object System.Text.StringBuilder
-  [void]$sb.AppendLine('<!DOCTYPE html><html lang="pl"><head><meta charset="utf-8">')
-  [void]$sb.AppendLine('<style>')
-  [void]$sb.AppendLine('@page { size: A4; margin: 18mm; }')
-  [void]$sb.AppendLine('body { font-family: "Segoe UI", Arial, sans-serif; font-size: 12pt; color:#111; }')
-  [void]$sb.AppendLine('h1 { font-size: 15pt; border-bottom: 2px solid #333; padding-bottom:6px; }')
-  [void]$sb.AppendLine('ul { line-height: 1.6; } li { margin: 2px 0; }')
-  [void]$sb.AppendLine('.empty { color:#999; font-style:italic; }')
-  [void]$sb.AppendLine('</style></head><body>')
-  [void]$sb.AppendLine('<h1>Etykieta: ' + (Convert-HtmlEscape $name) + '</h1>')
-  if ($lines.Count -eq 0) {
-    [void]$sb.AppendLine('<p class="empty">(nie znaleziono tekstu w tym pliku)</p>')
-  } else {
-    [void]$sb.AppendLine('<ul>')
-    foreach ($l in $lines) { [void]$sb.AppendLine('<li>' + (Convert-HtmlEscape $l) + '</li>') }
-    [void]$sb.AppendLine('</ul>')
-  }
-  [void]$sb.AppendLine('</body></html>')
-  return $sb.ToString()
-}
-
-function Find-Edge {
-  $bases = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA) | Where-Object { $_ }
-  foreach ($b in $bases) {
-    $c = Join-Path $b 'Microsoft\Edge\Application\msedge.exe'
-    if (Test-Path -LiteralPath $c) { return $c }
-  }
-  return $null
-}
-
-$EdgePath = Find-Edge
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
-function Convert-HtmlToPdf([string]$html, [string]$pdfPath) {
-  if (-not $EdgePath) { return $false }
-  $tmpHtml = Join-Path $env:TEMP ('btw_' + [guid]::NewGuid().ToString('N') + '.html')
-  $profile = Join-Path $env:TEMP ('btwedge_' + [guid]::NewGuid().ToString('N'))
-  [IO.File]::WriteAllText($tmpHtml, $html, $Utf8NoBom)
-  $url = 'file:///' + ($tmpHtml -replace '\\','/')
-  try {
-    & $EdgePath "--headless" "--disable-gpu" "--user-data-dir=$profile" "--print-to-pdf-no-header" "--print-to-pdf=$pdfPath" "$url" 2>$null | Out-Null
-  } catch { }
-  Remove-Item -LiteralPath $tmpHtml -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction SilentlyContinue
-  return (Test-Path -LiteralPath $pdfPath)
-}
 
 # --- glowna petla ---------------------------------------------------
 $total = 0
-$noEdgeWarned = $false
 
 foreach ($p in $Paths) {
   $files = @()
@@ -353,23 +299,6 @@ foreach ($p in $Paths) {
     $header = "# Etykieta: $($f.Name)`r`n# Wyodrebniony tekst ($($lines.Count) pozycji, $tryb)`r`n`r`n"
     [IO.File]::WriteAllText($txt, $header + ($lines -join "`r`n") + "`r`n", $Utf8NoBom)
     Write-Host ("  [TXT] {0}  ({1} linii)" -f (Split-Path $txt -Leaf), $lines.Count) -ForegroundColor Green
-
-    if (-not $NoPdf) {
-      $pdf  = [IO.Path]::ChangeExtension($f.FullName, '.pdf')
-      $html = Build-Html $f.Name $lines
-      if (Convert-HtmlToPdf $html $pdf) {
-        Write-Host ("  [PDF] {0}" -f (Split-Path $pdf -Leaf)) -ForegroundColor Green
-      } else {
-        $htmlOut = [IO.Path]::ChangeExtension($f.FullName, '.html')
-        [IO.File]::WriteAllText($htmlOut, $html, $Utf8NoBom)
-        if (-not $noEdgeWarned) {
-          Write-Host "  ! Nie udalo sie uzyc Edge do PDF (PDF to dodatek). Zapisuje HTML." -ForegroundColor Yellow
-          Write-Host "    Otworz plik .html i wcisnij Ctrl+P -> 'Microsoft Print to PDF'." -ForegroundColor Yellow
-          $noEdgeWarned = $true
-        }
-        Write-Host ("  [HTML] {0}" -f (Split-Path $htmlOut -Leaf)) -ForegroundColor Yellow
-      }
-    }
     $total++
   }
 }
