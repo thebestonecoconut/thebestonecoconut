@@ -36,9 +36,14 @@ param(
     # Czy pierwszy wiersz to naglowek (zostanie pominiety).
     [bool]$HasHeader = $true,
 
-    # Dopasowanie czesciowe: plik pasuje, gdy nazwa produktu zawiera sie
-    # w nazwie pliku lub odwrotnie. Domyslnie dopasowanie dokladne.
-    [switch]$Partial,
+    # Tryb tylko dokladnego dopasowania (po normalizacji nazw). Domyslnie
+    # wlaczone jest dopasowanie rozmyte (fuzzy), ktore radzi sobie z drobnymi
+    # roznicami w nazwach.
+    [switch]$ExactOnly,
+
+    # Minimalne podobienstwo (0-100) dla dopasowania rozmytego. Im wyzej,
+    # tym ostrzej (mniej trafien, mniej pomylek). Domyslnie 80.
+    [int]$Threshold = 80,
 
     # Czy przeszukiwac podfoldery w poszukiwaniu plikow.
     [switch]$Recurse
@@ -51,6 +56,73 @@ function Write-Info  ($m) { Write-Host $m -ForegroundColor Cyan }
 function Write-Ok    ($m) { Write-Host $m -ForegroundColor Green }
 function Write-Bad   ($m) { Write-Host $m -ForegroundColor Red }
 function Write-Warn2 ($m) { Write-Host $m -ForegroundColor Yellow }
+
+# ---------------------------------------------------------------------------
+# Normalizacja nazw - sprowadza nazwe do porownywalnej postaci:
+#  - male litery,
+#  - polskie znaki -> bez ogonkow (ą->a, ł->l ...),
+#  - usuniecie spacji, podkreslen, mysmikow, kropek i innych nie-alfanum.
+# Dzieki temu "Produkt_Alfa-01.btw" i "produkt alfa 01" sa traktowane podobnie.
+# ---------------------------------------------------------------------------
+function Get-NormName {
+    param([string]$s)
+    if ([string]::IsNullOrWhiteSpace($s)) { return "" }
+    $s = $s.ToLowerInvariant()
+    $map = @{
+        'ą'='a';'ć'='c';'ę'='e';'ł'='l';'ń'='n';'ó'='o';'ś'='s';'ź'='z';'ż'='z'
+    }
+    foreach ($k in $map.Keys) { $s = $s.Replace($k, $map[$k]) }
+    # usun wszystko poza literami i cyframi
+    $s = ($s -replace '[^a-z0-9]', '')
+    return $s
+}
+
+# Odleglosc edycyjna Damerau-Levenshtein (OSA): liczba operacji (wstaw, usun,
+# zamien, przestaw dwie sasiednie litery) potrzebnych do przerobienia a w b.
+# Dzieki obsludze przestawien typowe literowki (np. "Cukeir" <-> "Cukier")
+# licza sie jako 1 edycja.
+function Get-Levenshtein {
+    param([string]$a, [string]$b)
+    $la = $a.Length; $lb = $b.Length
+    if ($la -eq 0) { return $lb }
+    if ($lb -eq 0) { return $la }
+    $d = New-Object 'int[,]' ($la + 1), ($lb + 1)
+    for ($i = 0; $i -le $la; $i++) { $d[$i, 0] = $i }
+    for ($j = 0; $j -le $lb; $j++) { $d[0, $j] = $j }
+    for ($i = 1; $i -le $la; $i++) {
+        for ($j = 1; $j -le $lb; $j++) {
+            $cost = if ($a[$i - 1] -eq $b[$j - 1]) { 0 } else { 1 }
+            $del = $d[($i - 1), $j] + 1
+            $ins = $d[$i, ($j - 1)] + 1
+            $sub = $d[($i - 1), ($j - 1)] + $cost
+            $val = [Math]::Min([Math]::Min($del, $ins), $sub)
+            if ($i -gt 1 -and $j -gt 1 -and $a[$i - 1] -eq $b[$j - 2] -and $a[$i - 2] -eq $b[$j - 1]) {
+                $val = [Math]::Min($val, $d[($i - 2), ($j - 2)] + 1)
+            }
+            $d[$i, $j] = $val
+        }
+    }
+    return $d[$la, $lb]
+}
+
+# Zwraca podobienstwo 0-100 oraz typ dopasowania dla dwoch znormalizowanych nazw.
+function Get-Similarity {
+    param([string]$prod, [string]$file)
+    if ($prod -eq "" -or $file -eq "") { return [pscustomobject]@{ Score = 0; Typ = "brak" } }
+    if ($prod -eq $file) { return [pscustomobject]@{ Score = 100; Typ = "dokladne" } }
+    if ($file.Contains($prod) -or $prod.Contains($file)) {
+        # nazwa jednego zawiera sie w drugiej - mocne dopasowanie,
+        # punktacja zalezna od tego ile "nadmiaru" jest w dluzszej nazwie
+        $short = [Math]::Min($prod.Length, $file.Length)
+        $long  = [Math]::Max($prod.Length, $file.Length)
+        $score = [int](90 + 10.0 * $short / $long)   # 90-100
+        return [pscustomobject]@{ Score = $score; Typ = "zawiera" }
+    }
+    $dist = Get-Levenshtein $prod $file
+    $maxLen = [Math]::Max($prod.Length, $file.Length)
+    $score = [int][Math]::Round(100.0 * (1.0 - $dist / $maxLen))
+    return [pscustomobject]@{ Score = $score; Typ = "rozmyte" }
+}
 
 # ---------------------------------------------------------------------------
 # 1. Ustalenie sciezek domyslnych
@@ -83,7 +155,11 @@ Write-Info "Folder zrodlowy   : $SourceFolder"
 Write-Info "Folder docelowy   : $TargetFolder"
 Write-Info "Rozszerzenie      : .$Extension"
 Write-Info "Kolumna           : $Column   (naglowek: $HasHeader)"
-Write-Info "Dopasowanie       : $([string]::Format('{0}', $(if($Partial){'czesciowe'}else{'dokladne'})))"
+if ($ExactOnly) {
+    Write-Info "Dopasowanie       : tylko dokladne (po normalizacji nazw)"
+} else {
+    Write-Info "Dopasowanie       : rozmyte (prog podobienstwa: $Threshold%)"
+}
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -206,21 +282,20 @@ if ($products.Count -eq 0) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Wczytanie listy plikow zrodlowych
+# 4. Wczytanie listy plikow zrodlowych (z policzona nazwa znormalizowana)
 # ---------------------------------------------------------------------------
 $gciParams = @{ Path = $SourceFolder; File = $true; Filter = "*.$Extension" }
 if ($Recurse) { $gciParams["Recurse"] = $true }
-$files = @(Get-ChildItem @gciParams)
+$files = @(Get-ChildItem @gciParams | ForEach-Object {
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+    [pscustomobject]@{
+        File = $_
+        Name = $_.Name
+        Norm = (Get-NormName $base)
+    }
+})
 Write-Info "Znaleziono plikow .$Extension : $($files.Count)"
 Write-Host ""
-
-# Mapa: nazwa pliku bez rozszerzenia (lower) -> obiekt pliku
-$fileByName = @{}
-foreach ($f in $files) {
-    $key = [System.IO.Path]::GetFileNameWithoutExtension($f.Name).Trim().ToLowerInvariant()
-    if (-not $fileByName.ContainsKey($key)) { $fileByName[$key] = @() }
-    $fileByName[$key] += $f
-}
 
 # ---------------------------------------------------------------------------
 # 5. Dopasowanie i kopiowanie
@@ -234,21 +309,26 @@ $matchedFiles = New-Object System.Collections.Generic.HashSet[string]
 $okCount = 0
 $noCount = 0
 
+# Prog dopasowania: w trybie -ExactOnly liczy sie tylko 100%.
+$effThreshold = if ($ExactOnly) { 100 } else { $Threshold }
+
 foreach ($p in $products) {
-    $pKey = $p.Trim().ToLowerInvariant()
-    $hits = @()
+    $pNorm = Get-NormName $p
 
-    if ($Partial) {
-        foreach ($k in $fileByName.Keys) {
-            if ($k -like "*$pKey*" -or $pKey -like "*$k*") { $hits += $fileByName[$k] }
-        }
+    # Policz podobienstwo do kazdego pliku i znajdz najlepsze.
+    $scored = foreach ($fi in $files) {
+        $sim = Get-Similarity -prod $pNorm -file $fi.Norm
+        [pscustomobject]@{ FileInfo = $fi; Score = $sim.Score; Typ = $sim.Typ }
     }
-    else {
-        if ($fileByName.ContainsKey($pKey)) { $hits = $fileByName[$pKey] }
-    }
+    $scored = @($scored | Sort-Object -Property Score -Descending)
+    $best = $scored | Select-Object -First 1
+    $bestScore = if ($best) { $best.Score } else { 0 }
 
-    if ($hits.Count -gt 0) {
-        foreach ($f in $hits) {
+    if ($best -and $bestScore -ge $effThreshold) {
+        # Skopiuj wszystkie pliki z najlepszym wynikiem (obsluga duplikatow nazw).
+        $winners = @($scored | Where-Object { $_.Score -eq $bestScore })
+        foreach ($w in $winners) {
+            $f = $w.FileInfo.File
             $dest = Join-Path $TargetFolder $f.Name
             $status = "SKOPIOWANO"
             $err = ""
@@ -261,42 +341,55 @@ foreach ($p in $products) {
                 $err = $_.Exception.Message
             }
             if ($status -eq "SKOPIOWANO") {
-                Write-Ok ("[OK ] {0}  ->  {1}" -f $p, $f.Name)
+                Write-Ok ("[OK ] {0}  ->  {1}   ({2}%, {3})" -f $p, $f.Name, $w.Score, $w.Typ)
                 $okCount++
             } else {
                 Write-Bad ("[ERR] {0}  ->  {1} ({2})" -f $p, $f.Name, $err)
             }
             $report.Add([pscustomobject]@{
-                Produkt   = $p
-                Plik      = $f.Name
-                Status    = $status
-                Sciezka   = $f.FullName
-                Blad      = $err
+                Produkt      = $p
+                Plik         = $f.Name
+                Status       = $status
+                Podobienstwo = $w.Score
+                Typ          = $w.Typ
+                Sciezka      = $f.FullName
+                Blad         = $err
             })
         }
     }
     else {
-        Write-Bad ("[NIE] {0}  ->  brak pasujacego pliku .{1}" -f $p, $Extension)
+        # Brak dopasowania - pokaz najblizszego kandydata, by ulatwic ocene.
+        $cand = if ($best) { $best.FileInfo.Name } else { "" }
+        $candScore = $bestScore
+        if ($cand) {
+            Write-Bad ("[NIE] {0}  ->  brak dopasowania (najblizej: {1}, {2}%)" -f $p, $cand, $candScore)
+        } else {
+            Write-Bad ("[NIE] {0}  ->  brak plikow .{1} do porownania" -f $p, $Extension)
+        }
         $noCount++
         $report.Add([pscustomobject]@{
-            Produkt   = $p
-            Plik      = ""
-            Status    = "BRAK_PLIKU"
-            Sciezka   = ""
-            Blad      = ""
+            Produkt      = $p
+            Plik         = ""
+            Status       = "BRAK_DOPASOWANIA"
+            Podobienstwo = $candScore
+            Typ          = ("najblizej: " + $cand)
+            Sciezka      = ""
+            Blad         = ""
         })
     }
 }
 
 # Pliki, ktore istnieja, ale nie pasowaly do zadnego produktu
-$unmatched = $files | Where-Object { -not $matchedFiles.Contains($_.FullName) }
-foreach ($f in $unmatched) {
+$unmatched = $files | Where-Object { -not $matchedFiles.Contains($_.File.FullName) }
+foreach ($fi in $unmatched) {
     $report.Add([pscustomobject]@{
-        Produkt   = ""
-        Plik      = $f.Name
-        Status    = "NIEDOPASOWANY_PLIK"
-        Sciezka   = $f.FullName
-        Blad      = ""
+        Produkt      = ""
+        Plik         = $fi.Name
+        Status       = "NIEDOPASOWANY_PLIK"
+        Podobienstwo = ""
+        Typ          = ""
+        Sciezka      = $fi.File.FullName
+        Blad         = ""
     })
 }
 

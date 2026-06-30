@@ -34,6 +34,28 @@ W konsoli wyniki sa kolorowane: zielone `[OK ]`, czerwone `[NIE]`.
 Domyslnie nazwy produktow czytane sa z **kolumny A**, a **pierwszy wiersz**
 traktowany jest jako naglowek (pomijany).
 
+### Dopasowanie ROZMYTE (gdy nazwy sa podobne, nie identyczne)
+
+Domyslnie skrypt uzywa **dopasowania rozmytego**, ktore radzi sobie z drobnymi
+roznicami miedzy nazwa produktu a nazwa pliku:
+
+- rozne separatory i odstepy (`Produkt Alfa` ↔ `produkt_alfa`, `Kawa 250g` ↔ `Kawa-250g`),
+- polskie znaki / ich brak (`Maka pszenna` ↔ `maka_pszenna`),
+- dopiski w nazwie pliku (`Kawa 250g` ↔ `Kawa-250g-ARABICA`),
+- literowki, w tym przestawione litery (`Cukier` ↔ `Cukeir`).
+
+Dla kazdego produktu liczone jest **podobienstwo w %** do najlepiej pasujacego
+pliku. Plik zostaje skopiowany, gdy podobienstwo jest **>= progu** (domyslnie
+**80%**). W konsoli i w raporcie widac uzyte podobienstwo oraz typ dopasowania
+(`dokladne`, `zawiera`, `rozmyte`). Dla produktow bez dopasowania pokazywany
+jest **najblizszy kandydat i jego %** - latwo wtedy ocenic, czy obnizyc prog.
+
+Regulacja progu (6. parametr `.bat` lub `-Threshold` w PS):
+
+- za **malo** trafien -> obniz prog, np. `65`,
+- za **duzo** / mylne trafienia -> podnies prog, np. `90`,
+- chcesz **tylko identyczne** nazwy -> uzyj `-ExactOnly`.
+
 ### Uzycie z parametrami (wiersz polecen)
 
 ```bat
@@ -49,6 +71,13 @@ Kolejnosc parametrow (wszystkie opcjonalne):
 | 3       | folder docelowy (kopie)                | `.\skopiowane`           |
 | 4       | rozszerzenie plikow (bez kropki)       | `btw`                    |
 | 5       | litera kolumny z nazwami (`A`, `B`...) | `A`                      |
+| 6       | prog podobienstwa 0-100 (dopas. rozmyte) | `80`                   |
+
+Przyklad z luzniejszym dopasowaniem (prog 65%):
+
+```bat
+kopiuj_etykiety.bat "C:\dane\produkty.xlsx" "C:\etykiety" "C:\wynik" btw A 65
+```
 
 Mozesz tez przeciagnac plik Excel na ikone `.bat`.
 
@@ -61,17 +90,26 @@ powershell -ExecutionPolicy Bypass -File .\kopiuj_etykiety.ps1 `
     -TargetFolder ".\skopiowane" `
     -Column "A" `
     -HasHeader $true `
-    -Partial `        # dopasowanie czesciowe (nazwa zawiera sie w nazwie pliku)
+    -Threshold 80 `   # prog podobienstwa dla dopasowania rozmytego (0-100)
+    -ExactOnly `      # tylko dokladne dopasowanie (po normalizacji nazw)
     -Recurse          # przeszukuj rowniez podfoldery
 ```
 
-- `-Partial` – plik pasuje, gdy nazwa produktu zawiera sie w nazwie pliku
-  (lub odwrotnie). Bez tej opcji wymagane jest dopasowanie **dokladne**
-  (porownanie nie rozroznia wielkosci liter i ignoruje spacje na koncach).
+- `-Threshold <0-100>` – minimalne podobienstwo do uznania za dopasowanie
+  (domyslnie 80).
+- `-ExactOnly` – wymusza dopasowanie **dokladne** (po normalizacji nazw:
+  bez wielkosci liter, bez polskich znakow, bez spacji/podkreslen/myslnikow).
 - `-Recurse` – szuka plikow rowniez w podfolderach.
 
-### Dopasowywanie nazw
+### Jak liczone jest dopasowanie
 
-Porownywana jest **nazwa pliku bez rozszerzenia** z nazwa produktu. Np. produkt
-`Produkt Alfa` pasuje do pliku `Produkt Alfa.btw`. Porownanie ignoruje wielkosc
-liter oraz spacje na poczatku/koncu.
+Porownywana jest **nazwa pliku bez rozszerzenia** z nazwa produktu, po
+normalizacji obu (male litery, usuniete polskie znaki oraz znaki typu spacja,
+`_`, `-`, `.`). Nastepnie liczone jest podobienstwo:
+
+1. **dokladne** (100%) – nazwy identyczne po normalizacji,
+2. **zawiera** (90–100%) – jedna nazwa zawiera sie w drugiej (np. dopisek
+   rozmiaru/wersji w nazwie pliku),
+3. **rozmyte** – podobienstwo na podstawie odleglosci edycyjnej
+   (Damerau-Levenshtein), ktora liczy wstawienia, usuniecia, zamiany i
+   przestawienia sasiednich liter (literowki).

@@ -18,6 +18,11 @@ rem    %%2 = folder z plikami .btw
 rem    %%3 = folder docelowy (kopie)
 rem    %%4 = rozszerzenie plikow (domyslnie btw)
 rem    %%5 = litera kolumny z nazwami produktow (domyslnie A)
+rem    %%6 = prog podobienstwa 0-100 dla dopasowania rozmytego (domyslnie 80)
+rem
+rem  UWAGA: domyslnie wlaczone jest dopasowanie ROZMYTE (radzi sobie z
+rem  podobnymi, nie identycznymi nazwami). Jesli za duzo lapie lub myli
+rem  pliki - podnies prog (np. 90). Jesli za malo lapie - obniz (np. 65).
 rem ============================================================
 
 set "PS1=%~dp0kopiuj_etykiety.ps1"
@@ -28,6 +33,7 @@ if not "%~2"=="" set "ARGS=%ARGS% -SourceFolder ""%~2"""
 if not "%~3"=="" set "ARGS=%ARGS% -TargetFolder ""%~3"""
 if not "%~4"=="" set "ARGS=%ARGS% -Extension ""%~4"""
 if not "%~5"=="" set "ARGS=%ARGS% -Column ""%~5"""
+if not "%~6"=="" set "ARGS=%ARGS% -Threshold %~6"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"%ARGS%
 
