@@ -18,7 +18,7 @@ rem    %%2 = folder z plikami .btw
 rem    %%3 = folder docelowy (kopie)
 rem    %%4 = rozszerzenie plikow (domyslnie btw)
 rem    %%5 = litera kolumny z nazwami produktow (domyslnie A)
-rem    %%6 = prog podobienstwa 0-100 dla dopasowania rozmytego (domyslnie 80)
+rem    %%6 = prog podobienstwa 0-100 dla dopasowania rozmytego (domyslnie 75)
 rem
 rem  UWAGA: domyslnie wlaczone jest dopasowanie ROZMYTE (radzi sobie z
 rem  podobnymi, nie identycznymi nazwami). Jesli za duzo lapie lub myli

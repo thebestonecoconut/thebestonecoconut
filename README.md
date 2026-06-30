@@ -36,24 +36,40 @@ traktowany jest jako naglowek (pomijany).
 
 ### Dopasowanie ROZMYTE (gdy nazwy sa podobne, nie identyczne)
 
-Domyslnie skrypt uzywa **dopasowania rozmytego**, ktore radzi sobie z drobnymi
-roznicami miedzy nazwa produktu a nazwa pliku:
+Domyslnie skrypt uzywa **dopasowania rozmytego**, ktore radzi sobie z roznicami
+miedzy nazwa produktu a nazwa pliku, np. (prawdziwe przyklady):
 
-- rozne separatory i odstepy (`Produkt Alfa` ↔ `produkt_alfa`, `Kawa 250g` ↔ `Kawa-250g`),
-- polskie znaki / ich brak (`Maka pszenna` ↔ `maka_pszenna`),
-- dopiski w nazwie pliku (`Kawa 250g` ↔ `Kawa-250g-ARABICA`),
-- literowki, w tym przestawione litery (`Cukier` ↔ `Cukeir`).
+| Nazwa w Excelu                          | Nazwa pliku                                                  |
+|-----------------------------------------|--------------------------------------------------------------|
+| `Danmis Jogurt kozi jagodowy 125g`      | `Danmis - jogurt kozi jagodowy 125g.btw`                     |
+| `Danmis Ser kozi termizowany wanilia 100g` | `Danmis - ser kozi termizowany waniliowy 100g K.btw`      |
+| `Danmis Ser kozi twarogowy 200g`        | `Danmis - ser kozi twarogowy (pełnotłusty) 200g.btw`        |
+| `Danmis Ser Kozi kanapkowy 150g`        | `Danmis - twaróg kozi kanapkowy 150g.btw`                   |
+| `Danmis Ser Kozi wędzony plastry 100g`  | `Danmis N - ser kozi twardy wędzony ... w plastrach 100g (5160).btw` |
 
-Dla kazdego produktu liczone jest **podobienstwo w %** do najlepiej pasujacego
-pliku. Plik zostaje skopiowany, gdy podobienstwo jest **>= progu** (domyslnie
-**80%**). W konsoli i w raporcie widac uzyte podobienstwo oraz typ dopasowania
-(`dokladne`, `zawiera`, `rozmyte`). Dla produktow bez dopasowania pokazywany
-jest **najblizszy kandydat i jego %** - latwo wtedy ocenic, czy obnizyc prog.
+Radzi sobie m.in. z:
+
+- myslnikami, dopiskami w nazwie pliku (` K`, kody w nawiasach `(1910)`, `(5160)`),
+- innymi separatorami i odstepami, polskimi znakami / ich brakiem,
+- inna kolejnoscia / zmiana slow (`Ser kozi` ↔ `twaróg kozi`, `twarogowy` ↔ `twaróg`),
+- odmiana i koncowkami (`plastry` ↔ `plastrach`, `wanilia` ↔ `waniliowy`),
+- literowkami, w tym przestawionymi literami (`Cukier` ↔ `Cukeir`).
+
+**Jak to dziala:** dla kazdego produktu liczone jest **podobienstwo w %** do
+najlepiej pasujacego pliku - laczone z dwoch metod: porownania calej nazwy oraz
+porownania **slowo po slowie** (mniej istotne slowa, jak pojedyncze litery czy
+kody liczbowe, maja mniejsza wage; nadmiarowe slowa w nazwie pliku obnizaja
+wynik). Plik jest kopiowany, gdy podobienstwo jest **>= progu** (domyslnie
+**75%**). Typ dopasowania w raporcie: `dokladne`, `zawiera`, `slowa`, `rozmyte`.
+
+Dla produktow **bez dopasowania** raport i konsola pokazuja **najblizszego
+kandydata i jego %** - latwo ocenic, czy to faktycznie brak pliku, czy trzeba
+obnizyc prog.
 
 Regulacja progu (6. parametr `.bat` lub `-Threshold` w PS):
 
 - za **malo** trafien -> obniz prog, np. `65`,
-- za **duzo** / mylne trafienia -> podnies prog, np. `90`,
+- za **duzo** / mylne trafienia -> podnies prog, np. `85`,
 - chcesz **tylko identyczne** nazwy -> uzyj `-ExactOnly`.
 
 ### Uzycie z parametrami (wiersz polecen)
@@ -71,7 +87,7 @@ Kolejnosc parametrow (wszystkie opcjonalne):
 | 3       | folder docelowy (kopie)                | `.\skopiowane`           |
 | 4       | rozszerzenie plikow (bez kropki)       | `btw`                    |
 | 5       | litera kolumny z nazwami (`A`, `B`...) | `A`                      |
-| 6       | prog podobienstwa 0-100 (dopas. rozmyte) | `80`                   |
+| 6       | prog podobienstwa 0-100 (dopas. rozmyte) | `75`                   |
 
 Przyklad z luzniejszym dopasowaniem (prog 65%):
 
@@ -90,26 +106,32 @@ powershell -ExecutionPolicy Bypass -File .\kopiuj_etykiety.ps1 `
     -TargetFolder ".\skopiowane" `
     -Column "A" `
     -HasHeader $true `
-    -Threshold 80 `   # prog podobienstwa dla dopasowania rozmytego (0-100)
+    -Threshold 75 `   # prog podobienstwa dla dopasowania rozmytego (0-100)
     -ExactOnly `      # tylko dokladne dopasowanie (po normalizacji nazw)
     -Recurse          # przeszukuj rowniez podfoldery
 ```
 
 - `-Threshold <0-100>` – minimalne podobienstwo do uznania za dopasowanie
-  (domyslnie 80).
+  (domyslnie 75).
 - `-ExactOnly` – wymusza dopasowanie **dokladne** (po normalizacji nazw:
   bez wielkosci liter, bez polskich znakow, bez spacji/podkreslen/myslnikow).
 - `-Recurse` – szuka plikow rowniez w podfolderach.
 
 ### Jak liczone jest dopasowanie
 
-Porownywana jest **nazwa pliku bez rozszerzenia** z nazwa produktu, po
-normalizacji obu (male litery, usuniete polskie znaki oraz znaki typu spacja,
-`_`, `-`, `.`). Nastepnie liczone jest podobienstwo:
+Porownywana jest **nazwa pliku bez rozszerzenia** z nazwa produktu. Liczone sa
+dwie metody, a brany jest **lepszy** wynik:
 
-1. **dokladne** (100%) – nazwy identyczne po normalizacji,
-2. **zawiera** (90–100%) – jedna nazwa zawiera sie w drugiej (np. dopisek
-   rozmiaru/wersji w nazwie pliku),
-3. **rozmyte** – podobienstwo na podstawie odleglosci edycyjnej
-   (Damerau-Levenshtein), ktora liczy wstawienia, usuniecia, zamiany i
-   przestawienia sasiednich liter (literowki).
+1. **Cala nazwa** (po normalizacji: male litery, bez polskich znakow, bez spacji
+   `_` `-` `.`):
+   - `dokladne` (100%) – identyczne,
+   - `zawiera` – jedna zawiera sie w drugiej,
+   - `rozmyte` – odleglosc edycyjna Damerau-Levenshtein (wstaw/usun/zamien/
+     przestaw sasiednie litery), dobra na literowki.
+2. **Slowo po slowie** (`slowa`) – jaka czesc (wazona) slow produktu wystepuje w
+   nazwie pliku, z tolerancja na koncowki/odmiane. Pojedyncze litery i kody
+   liczbowe maja mniejsza wage, a nadmiarowe slowa w nazwie pliku obnizaja
+   wynik. Ta metoda najlepiej radzi sobie z dopiskami i inna kolejnoscia slow.
+
+Dopasowanie identyczne (100%) zawsze ma pierwszenstwo, wiec gdy istnieje plik
+o dokladnie tej nazwie, nie sa dublowane kopie wariantow z dopiskami.

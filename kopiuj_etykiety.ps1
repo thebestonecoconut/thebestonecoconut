@@ -42,8 +42,8 @@ param(
     [switch]$ExactOnly,
 
     # Minimalne podobienstwo (0-100) dla dopasowania rozmytego. Im wyzej,
-    # tym ostrzej (mniej trafien, mniej pomylek). Domyslnie 80.
-    [int]$Threshold = 80,
+    # tym ostrzej (mniej trafien, mniej pomylek). Domyslnie 75.
+    [int]$Threshold = 75,
 
     # Czy przeszukiwac podfoldery w poszukiwaniu plikow.
     [switch]$Recurse
@@ -77,6 +77,72 @@ function Get-NormName {
     return $s
 }
 
+# Rozbija nazwe na slowa (tokeny) wraz z waga kazdego slowa. Mniej istotne
+# fragmenty (pojedyncze litery typu "K"/"N", kody liczbowe jak "1910") maja
+# nizsza wage, dzieki czemu nie psuja dopasowania.
+function Get-Tokens {
+    param([string]$s)
+    if ([string]::IsNullOrWhiteSpace($s)) { return @() }
+    $s = $s.ToLowerInvariant()
+    $map = @{ 'ą'='a';'ć'='c';'ę'='e';'ł'='l';'ń'='n';'ó'='o';'ś'='s';'ź'='z';'ż'='z' }
+    foreach ($k in $map.Keys) { $s = $s.Replace($k, $map[$k]) }
+    $parts = $s -split '[^a-z0-9]+' | Where-Object { $_ -ne "" }
+    $result = @()
+    foreach ($t in $parts) {
+        $w = $t.Length
+        if ($t.Length -le 1) { $w = 0.3 }                 # pojedyncze litery: szum
+        elseif ($t -match '^[0-9]+$') { $w = 1.0 }        # czyste liczby: zwykle kody
+        $result += [pscustomobject]@{ T = $t; W = [double]$w }
+    }
+    return $result
+}
+
+# Dopasowanie po slowach: jaka czesc (wazona) slow produktu wystepuje w nazwie
+# pliku, z lekka tolerancja na literowki/koncowki i kara za nadmiarowe slowa
+# w nazwie pliku.
+function Get-TokenScore {
+    param($prodTokens, $fileTokens)
+    if (-not $prodTokens -or $prodTokens.Count -eq 0) { return 0 }
+    if (-not $fileTokens -or $fileTokens.Count -eq 0) { return 0 }
+
+    $used = New-Object 'bool[]' ($fileTokens.Count)
+    $totalW = 0.0
+    $matchedW = 0.0
+    foreach ($pt in $prodTokens) {
+        $totalW += $pt.W
+        $bestSim = 0.0
+        $bestIdx = -1
+        for ($i = 0; $i -lt $fileTokens.Count; $i++) {
+            if ($used[$i]) { continue }
+            $ft = $fileTokens[$i]
+            if ($pt.T -eq $ft.T) { $sim = 1.0 }
+            else {
+                $dist = Get-Levenshtein $pt.T $ft.T
+                $ml = [Math]::Max($pt.T.Length, $ft.T.Length)
+                $sim = 1.0 - ($dist / $ml)
+            }
+            if ($sim -gt $bestSim) { $bestSim = $sim; $bestIdx = $i }
+        }
+        # prog 0.6 toleruje polskie odmiany/koncowki (plastry<->plastrach)
+        if ($bestSim -ge 0.6 -and $bestIdx -ge 0) {
+            $used[$bestIdx] = $true
+            $matchedW += $pt.W * $bestSim
+        }
+    }
+    # waga slow pliku, ktore nie zostaly wykorzystane (nadmiar w nazwie pliku)
+    $extraW = 0.0
+    for ($i = 0; $i -lt $fileTokens.Count; $i++) {
+        if (-not $used[$i]) { $extraW += $fileTokens[$i].W }
+    }
+    $denom = $totalW + 0.3 * $extraW
+    if ($denom -le 0) { return 0 }
+    $score = 100.0 * $matchedW / $denom
+    # ograniczamy do 99, aby dopasowanie IDENTYCZNE (100%) zawsze mialo
+    # pierwszenstwo i nie dublowac kopii wariantami z dopiskami (np. " K").
+    if ($score -gt 99) { $score = 99 }
+    return [int][Math]::Round($score)
+}
+
 # Odleglosc edycyjna Damerau-Levenshtein (OSA): liczba operacji (wstaw, usun,
 # zamien, przestaw dwie sasiednie litery) potrzebnych do przerobienia a w b.
 # Dzieki obsludze przestawien typowe literowki (np. "Cukeir" <-> "Cukier")
@@ -105,23 +171,41 @@ function Get-Levenshtein {
     return $d[$la, $lb]
 }
 
-# Zwraca podobienstwo 0-100 oraz typ dopasowania dla dwoch znormalizowanych nazw.
+# Zwraca podobienstwo 0-100 oraz typ dopasowania. Laczy dwie metody i bierze
+# lepszy wynik:
+#  - porownanie calych nazw po normalizacji (dobre dla nazw 1:1 i literowek),
+#  - dopasowanie po slowach (dobre, gdy plik ma dopiski/inna kolejnosc slow).
 function Get-Similarity {
-    param([string]$prod, [string]$file)
-    if ($prod -eq "" -or $file -eq "") { return [pscustomobject]@{ Score = 0; Typ = "brak" } }
-    if ($prod -eq $file) { return [pscustomobject]@{ Score = 100; Typ = "dokladne" } }
-    if ($file.Contains($prod) -or $prod.Contains($file)) {
-        # nazwa jednego zawiera sie w drugiej - mocne dopasowanie,
-        # punktacja zalezna od tego ile "nadmiaru" jest w dluzszej nazwie
-        $short = [Math]::Min($prod.Length, $file.Length)
-        $long  = [Math]::Max($prod.Length, $file.Length)
-        $score = [int](90 + 10.0 * $short / $long)   # 90-100
-        return [pscustomobject]@{ Score = $score; Typ = "zawiera" }
+    param(
+        [string]$prodNorm, [string]$fileNorm,
+        $prodTokens, $fileTokens
+    )
+    if ([string]::IsNullOrEmpty($prodNorm) -or [string]::IsNullOrEmpty($fileNorm)) {
+        return [pscustomobject]@{ Score = 0; Typ = "brak" }
     }
-    $dist = Get-Levenshtein $prod $file
-    $maxLen = [Math]::Max($prod.Length, $file.Length)
-    $score = [int][Math]::Round(100.0 * (1.0 - $dist / $maxLen))
-    return [pscustomobject]@{ Score = $score; Typ = "rozmyte" }
+    if ($prodNorm -eq $fileNorm) { return [pscustomobject]@{ Score = 100; Typ = "dokladne" } }
+
+    # 1) calosc po normalizacji (wynik <100, by identyczne mialo pierwszenstwo)
+    if ($fileNorm.Contains($prodNorm) -or $prodNorm.Contains($fileNorm)) {
+        $short = [Math]::Min($prodNorm.Length, $fileNorm.Length)
+        $long  = [Math]::Max($prodNorm.Length, $fileNorm.Length)
+        $fullScore = [Math]::Min(99, [int](90 + 10.0 * $short / $long))
+        $fullTyp = "zawiera"
+    }
+    else {
+        $dist = Get-Levenshtein $prodNorm $fileNorm
+        $maxLen = [Math]::Max($prodNorm.Length, $fileNorm.Length)
+        $fullScore = [Math]::Min(99, [int][Math]::Round(100.0 * (1.0 - $dist / $maxLen)))
+        $fullTyp = "rozmyte"
+    }
+
+    # 2) po slowach
+    $tokScore = Get-TokenScore $prodTokens $fileTokens
+
+    if ($tokScore -ge $fullScore) {
+        return [pscustomobject]@{ Score = $tokScore; Typ = "slowa" }
+    }
+    return [pscustomobject]@{ Score = $fullScore; Typ = $fullTyp }
 }
 
 # ---------------------------------------------------------------------------
@@ -289,9 +373,10 @@ if ($Recurse) { $gciParams["Recurse"] = $true }
 $files = @(Get-ChildItem @gciParams | ForEach-Object {
     $base = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
     [pscustomobject]@{
-        File = $_
-        Name = $_.Name
-        Norm = (Get-NormName $base)
+        File   = $_
+        Name   = $_.Name
+        Norm   = (Get-NormName $base)
+        Tokens = (Get-Tokens $base)
     }
 })
 Write-Info "Znaleziono plikow .$Extension : $($files.Count)"
@@ -314,10 +399,11 @@ $effThreshold = if ($ExactOnly) { 100 } else { $Threshold }
 
 foreach ($p in $products) {
     $pNorm = Get-NormName $p
+    $pTokens = Get-Tokens $p
 
     # Policz podobienstwo do kazdego pliku i znajdz najlepsze.
     $scored = foreach ($fi in $files) {
-        $sim = Get-Similarity -prod $pNorm -file $fi.Norm
+        $sim = Get-Similarity -prodNorm $pNorm -fileNorm $fi.Norm -prodTokens $pTokens -fileTokens $fi.Tokens
         [pscustomobject]@{ FileInfo = $fi; Score = $sim.Score; Typ = $sim.Typ }
     }
     $scored = @($scored | Sort-Object -Property Score -Descending)
