@@ -60,18 +60,37 @@ function Write-Warn2 ($m) { Write-Host $m -ForegroundColor Yellow }
 # ---------------------------------------------------------------------------
 # Normalizacja nazw - sprowadza nazwe do porownywalnej postaci:
 #  - male litery,
-#  - polskie znaki -> bez ogonkow (ą->a, ł->l ...),
+#  - polskie znaki -> bez ogonkow (a-z),
 #  - usuniecie spacji, podkreslen, mysmikow, kropek i innych nie-alfanum.
 # Dzieki temu "Produkt_Alfa-01.btw" i "produkt alfa 01" sa traktowane podobnie.
 # ---------------------------------------------------------------------------
+# Zamienia polskie znaki diakrytyczne na podstawowe litery ( a-z). Uzywamy
+# kodow Unicode zamiast literalnych znakow, aby skrypt dzialal niezaleznie od
+# kodowania pliku (Windows PowerShell 5.1 czyta .ps1 w kodowaniu ANSI, przez co
+# literalne polskie znaki UTF-8 moglyby zostac zle zinterpretowane).
+function Remove-PolishDiacritics {
+    param([string]$s)
+    if ([string]::IsNullOrEmpty($s)) { return $s }
+    $pairs = @(
+        @([char]0x0105, 'a'),  # a z ogonkiem
+        @([char]0x0107, 'c'),  # c z kreska
+        @([char]0x0119, 'e'),  # e z ogonkiem
+        @([char]0x0142, 'l'),  # l z kreska
+        @([char]0x0144, 'n'),  # n z kreska
+        @([char]0x00F3, 'o'),  # o z kreska
+        @([char]0x015B, 's'),  # s z kreska
+        @([char]0x017A, 'z'),  # z z kreska
+        @([char]0x017C, 'z')   # z z kropka
+    )
+    foreach ($p in $pairs) { $s = $s.Replace([string]$p[0], $p[1]) }
+    return $s
+}
+
 function Get-NormName {
     param([string]$s)
     if ([string]::IsNullOrWhiteSpace($s)) { return "" }
     $s = $s.ToLowerInvariant()
-    $map = @{
-        'ą'='a';'ć'='c';'ę'='e';'ł'='l';'ń'='n';'ó'='o';'ś'='s';'ź'='z';'ż'='z'
-    }
-    foreach ($k in $map.Keys) { $s = $s.Replace($k, $map[$k]) }
+    $s = Remove-PolishDiacritics $s
     # usun wszystko poza literami i cyframi
     $s = ($s -replace '[^a-z0-9]', '')
     return $s
@@ -84,8 +103,7 @@ function Get-Tokens {
     param([string]$s)
     if ([string]::IsNullOrWhiteSpace($s)) { return @() }
     $s = $s.ToLowerInvariant()
-    $map = @{ 'ą'='a';'ć'='c';'ę'='e';'ł'='l';'ń'='n';'ó'='o';'ś'='s';'ź'='z';'ż'='z' }
-    foreach ($k in $map.Keys) { $s = $s.Replace($k, $map[$k]) }
+    $s = Remove-PolishDiacritics $s
     $parts = $s -split '[^a-z0-9]+' | Where-Object { $_ -ne "" }
     $result = @()
     foreach ($t in $parts) {
